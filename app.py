@@ -1,3 +1,4 @@
+import os
 import re
 from flask import Flask, request, jsonify
 from datetime import datetime, timezone
@@ -14,40 +15,50 @@ scheduler.add_job(check_and_send_reminders, "cron", hour=9, minute=0)
 scheduler.add_job(check_and_send_reports,   "cron", hour=9, minute=5)
 scheduler.start()
 
-
-def normalize_phone(telefone: str) -> str:
-    """Remove tudo que não é dígito e garante o DDI 55."""
-    digits = re.sub(r"\D", "", telefone)
-    if not digits.startswith("55"):
-        digits = "55" + digits
-    return digits
+LOCAL_EVENTO = os.getenv("LOCAL_EVENTO", "")
 
 
 @app.route("/webhook/form", methods=["POST"])
 def receive_form():
-    """Recebe nova inscrição enviada pelo Make.com."""
+    """Recebe nova inscrição enviada pelo Power Automate."""
     data = request.json
 
     nome      = data.get("nome", "").strip()
-    telefone  = normalize_phone(data.get("telefone", ""))
-    data_ev   = data.get("data_evento", "").strip()   # formato esperado: YYYY-MM-DD
+    cargo     = data.get("cargo", "").strip()
     unidade   = data.get("unidade", "").strip()
-    local     = data.get("local", "").strip()
+    email     = data.get("email", "").strip()
+    data_ev   = data.get("data_evento", "").strip()   # formato esperado: YYYY-MM-DD
 
-    if not all([nome, telefone, data_ev, unidade, local]):
-        return jsonify({"error": "Campos obrigatórios ausentes"}), 400
+    if not all([nome, unidade, data_ev]):
+        return jsonify({"error": "Campos obrigatórios ausentes: nome, unidade, data_evento"}), 400
+
+    # Busca o telefone do responsável pela unidade
+    unidade_result = (
+        client.table("unidades")
+        .select("telefone_responsavel")
+        .eq("nome", unidade)
+        .limit(1)
+        .execute()
+    )
+
+    if not unidade_result.data:
+        return jsonify({"error": f"Unidade '{unidade}' não encontrada na base"}), 404
+
+    telefone = unidade_result.data[0]["telefone_responsavel"]
 
     record = client.table("reminders").insert({
         "nome":        nome,
+        "cargo":       cargo,
+        "email":       email,
         "telefone":    telefone,
         "data_evento": data_ev,
         "unidade":     unidade,
-        "local":       local,
+        "local":       LOCAL_EVENTO,
         "status":      "pending"
     }).execute()
 
     reminder_id = record.data[0]["id"]
-    print(f"[FORM] Inscrito salvo: {nome} | evento {data_ev} | id {reminder_id}")
+    print(f"[FORM] Inscrito salvo: {nome} ({cargo}) | unidade {unidade} | evento {data_ev} | id {reminder_id}")
 
     return jsonify({"ok": True, "id": reminder_id}), 200
 

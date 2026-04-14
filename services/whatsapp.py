@@ -13,12 +13,11 @@ SECRET_KEY      = os.getenv("AGILE_SECRETKEY")
 ORGANIZER_NUMBER = os.getenv("ORGANIZER_NUMBER")
 
 REMINDER_TEMPLATE = (
-    "Olá, {nome}!\n\n"
-    "Você está inscrito no evento da unidade *{unidade}*, "
-    "localizada em *{local}*, no dia *{data}*.\n\n"
-    "Por favor, confirme sua presença respondendo:\n"
-    "*SIM* para confirmar\n"
-    "*NÃO* para cancelar"
+    "Olá!\n\n"
+    "O evento da unidade *{unidade}* está confirmado para o dia *{data}*, "
+    "em *{local}*.\n\n"
+    "A equipe da sua unidade irá comparecer?\n\n"
+    "Responda *SIM* para confirmar ou *NÃO* para cancelar."
 )
 
 REPORT_TEMPLATE = (
@@ -40,9 +39,8 @@ def _send(number: str, body: str):
     return response.json()
 
 
-def send_reminder(nome: str, telefone: str, data: str, unidade: str, local: str):
+def send_reminder(telefone: str, data: str, unidade: str, local: str):
     body = REMINDER_TEMPLATE.format(
-        nome=nome,
         data=data,
         unidade=unidade,
         local=local

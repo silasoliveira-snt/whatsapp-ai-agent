@@ -21,7 +21,6 @@ def check_and_send_reminders():
     for reminder in result.data:
         try:
             send_reminder(
-                nome=reminder["nome"],
                 telefone=reminder["telefone"],
                 data=reminder["data_evento"],
                 unidade=reminder["unidade"],
