@@ -1,49 +1,15 @@
 from datetime import date, timedelta, datetime, timezone
 from services.supabase_client import client
-from services.whatsapp import send_reminder, send_report
-
-
-def check_and_send_reminders():
-    """
-    Roda todo dia às 09h.
-    Busca inscritos cujo evento é daqui 14 dias e ainda não receberam lembrete.
-    """
-    target_date = (date.today() + timedelta(days=14)).isoformat()
-
-    result = (
-        client.table("reminders")
-        .select("*")
-        .eq("data_evento", target_date)
-        .eq("status", "pending")
-        .execute()
-    )
-
-    for reminder in result.data:
-        try:
-            send_reminder(
-                telefone=reminder["telefone"],
-                data=reminder["data_evento"],
-                unidade=reminder["unidade"],
-                local=reminder["local"]
-            )
-            client.table("reminders").update({
-                "status": "sent",
-                "sent_at": datetime.now(timezone.utc).isoformat()
-            }).eq("id", reminder["id"]).execute()
-
-            print(f"[LEMBRETE] Enviado para {reminder['nome']} ({reminder['telefone']})")
-
-        except Exception as e:
-            print(f"[ERRO] Falha ao enviar lembrete para {reminder['nome']}: {e}")
+from services.whatsapp import send_report
 
 
 def check_and_send_reports():
     """
-    Roda todo dia às 09h05.
-    Busca eventos daqui 7 dias e envia relatório de confirmados/recusados/sem resposta
+    Roda todo dia às 09h.
+    Busca eventos daqui 3 dias e envia relatório de confirmados/recusados/sem resposta
     para o número do organizador (uma mensagem por evento).
     """
-    target_date = (date.today() + timedelta(days=7)).isoformat()
+    target_date = (date.today() + timedelta(days=3)).isoformat()
 
     result = (
         client.table("reminders")
