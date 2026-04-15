@@ -208,47 +208,88 @@ def relatorio():
 
 @app.route("/webhook/treinamento", methods=["POST"])
 def receive_treinamento():
-    """Recebe nova presença em treinamento — suporta Tally e payload flat."""
+    """Recebe inscrição de treinamento — formulário Geral e Médicos (Tally) ou payload flat."""
     payload = request.json
     print(f"[TREINAMENTO] Payload recebido: {payload}")
 
-    # Formato Tally: { "data": { "fields": [ { "label": "...", "value": "..." } ] } }
     if "data" in payload and "fields" in payload.get("data", {}):
-        # Busca por palavra-chave no label (case-insensitive) — robusto a variações de texto
         def achar(keyword):
+            """Retorna o texto do primeiro campo cujo label contenha a keyword."""
             for f in payload["data"]["fields"]:
                 if keyword.lower() in f["label"].lower():
-                    if f.get("type") == "DROPDOWN" and isinstance(f.get("value"), list):
-                        selected = [o["text"] for o in f.get("options", []) if o["id"] in f["value"]]
+                    tipo = f.get("type", "")
+                    valor = f.get("value")
+                    # Dropdown: value é lista de IDs
+                    if tipo == "DROPDOWN" and isinstance(valor, list):
+                        selected = [o["text"] for o in f.get("options", []) if o["id"] in valor]
                         return selected[0] if selected else ""
-                    return str(f["value"]).strip()
+                    # Checkbox / Multiple choice: value pode ser lista de IDs ou lista de textos
+                    if tipo in ("CHECKBOXES", "MULTIPLE_CHOICE") and isinstance(valor, list):
+                        if valor and isinstance(valor[0], dict):
+                            return valor[0].get("text", "")
+                        # tenta casar com options
+                        options = f.get("options", [])
+                        if options:
+                            selected = [o["text"] for o in options if o["id"] in valor]
+                            return selected[0] if selected else ""
+                        return str(valor[0]).strip() if valor else ""
+                    if valor is None:
+                        return ""
+                    return str(valor).strip()
             return ""
 
-        nome        = achar("nome")
-        email       = achar("email")
-        treinamento = achar("treinamento")
-        data_tr     = achar("data")
-        unidade     = achar("unidade")
+        nome    = achar("nome")
+        unidade = achar("unidade")
+        email   = achar("email")
+        crm     = achar("crm")
+
+        # Treinamento: tenta Online primeiro, depois Presencial (ou qualquer campo com "treinamento")
+        treinamento = ""
+        for f in payload["data"]["fields"]:
+            if "treinamento" in f["label"].lower():
+                tipo  = f.get("type", "")
+                valor = f.get("value")
+                if not valor:
+                    continue
+                if tipo in ("CHECKBOXES", "MULTIPLE_CHOICE", "DROPDOWN") and isinstance(valor, list):
+                    options = f.get("options", [])
+                    if options:
+                        selected = [o["text"] for o in options if o["id"] in valor]
+                        if selected:
+                            treinamento = selected[0]
+                            break
+                    if valor:
+                        treinamento = str(valor[0]).strip()
+                        break
+                else:
+                    treinamento = str(valor).strip()
+                    break
     else:
-        # Formato flat (Power Automate)
         nome        = payload.get("nome", "").strip()
         email       = payload.get("email", "").strip()
+        crm         = payload.get("crm", "").strip()
         treinamento = payload.get("treinamento", "").strip()
-        data_tr     = payload.get("data_treinamento", "").strip()
         unidade     = payload.get("unidade", "").strip()
 
-    if not all([nome, email, treinamento, data_tr]):
-        print(f"[TREINAMENTO] Campos ausentes — nome={nome} email={email} treinamento={treinamento} data={data_tr}")
-        return jsonify({"error": "Campos obrigatórios ausentes: nome, email, treinamento, data_treinamento"}), 400
+    if not all([nome, treinamento]):
+        print(f"[TREINAMENTO] Campos ausentes — nome={nome} treinamento={treinamento}")
+        return jsonify({"error": "Campos obrigatórios ausentes: nome, treinamento"}), 400
 
-    # Aceita dd/MM/yyyy ou yyyy-MM-dd
-    if len(data_tr) == 10 and data_tr[2] == "/":
-        from datetime import datetime as dt
-        data_tr = dt.strptime(data_tr, "%d/%m/%Y").strftime("%Y-%m-%d")
+    # Busca a data na tabela cronograma pelo nome exato do treinamento
+    cron = (
+        client.table("cronograma")
+        .select("data")
+        .eq("treinamento", treinamento)
+        .limit(1)
+        .execute()
+    )
+    data_tr = cron.data[0]["data"] if cron.data else None
+    print(f"[TREINAMENTO] Data encontrada no cronograma: {data_tr} para '{treinamento}'")
 
     record = client.table("treinamentos").insert({
         "nome":             nome,
-        "email":            email,
+        "email":            email or None,
+        "crm":              crm or None,
         "treinamento":      treinamento,
         "data_treinamento": data_tr,
         "unidade":          unidade,
