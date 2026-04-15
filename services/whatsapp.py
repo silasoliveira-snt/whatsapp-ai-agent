@@ -10,8 +10,9 @@ HEADERS         = {
     "Authorization": f"Bearer {os.getenv('AGILE_BEARERTOKEN')}",
     "Content-Type": "application/json"
 }
-SECRET_KEY      = os.getenv("AGILE_SECRETKEY")
+SECRET_KEY       = os.getenv("AGILE_SECRETKEY")
 ORGANIZER_NUMBER = os.getenv("ORGANIZER_NUMBER")
+GESTOR_NUMBER    = os.getenv("GESTOR_NUMBER")
 
 # --- Edite as mensagens abaixo ---
 

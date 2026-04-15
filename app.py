@@ -3,7 +3,8 @@ import re
 from flask import Flask, request, jsonify, render_template
 from datetime import datetime, timezone
 from services.supabase_client import client
-from services.whatsapp import send_reminder, send_report
+from services.whatsapp import send_reminder, send_report, GESTOR_NUMBER, _send
+from services.agent import process_gestor_message
 
 app = Flask(__name__)
 
@@ -81,9 +82,21 @@ def receive_reply():
         return jsonify({"ok": True}), 200
 
     telefone = data.get("ticket", {}).get("contact", {}).get("number", "")
-    mensagem = (data.get("msg", {}).get("body") or "").strip().upper()
+    mensagem = (data.get("msg", {}).get("body") or "").strip()
 
-    # Aceita variações: SIM, NÃO, NAO, NÃO, sim, não...
+    # Mensagens do gestor → agente de IA
+    if GESTOR_NUMBER and telefone == GESTOR_NUMBER:
+        print(f"[GESTOR] Mensagem recebida: {mensagem}")
+        try:
+            resposta = process_gestor_message(mensagem)
+            _send(GESTOR_NUMBER, resposta)
+            print(f"[GESTOR] Resposta enviada: {resposta}")
+        except Exception as e:
+            print(f"[GESTOR] Erro ao processar: {e}")
+        return jsonify({"ok": True}), 200
+
+    # Respostas de confirmação (SIM/NÃO) dos franqueados
+    mensagem = mensagem.upper()
     if mensagem not in ("SIM", "NÃO", "NAO"):
         return jsonify({"ok": True}), 200
 

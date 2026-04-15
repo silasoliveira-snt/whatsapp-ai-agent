@@ -3,4 +3,4 @@ gunicorn
 supabase
 requests
 python-dotenv
-apscheduler
+openai
