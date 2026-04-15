@@ -115,25 +115,30 @@ def disparar():
     if not result.data:
         return jsonify({"ok": True, "enviados": 0, "msg": "Nenhum inscrito pendente para essa data"}), 200
 
+    # Agrupa por (unidade, telefone) → 1 mensagem por unidade com todos os nomes
+    grupos = {}
+    for r in result.data:
+        chave = (r["unidade"], r["telefone"])
+        if chave not in grupos:
+            grupos[chave] = {"nomes": [], "ids": []}
+        grupos[chave]["nomes"].append(r["nome"])
+        grupos[chave]["ids"].append(r["id"])
+
     enviados, erros = 0, []
 
-    for reminder in result.data:
+    for (unidade, telefone), dados in grupos.items():
         try:
-            send_reminder(
-                telefone=reminder["telefone"],
-                data=reminder["data_evento"],
-                unidade=reminder["unidade"],
-                local=reminder["local"]
-            )
-            client.table("reminders").update({
-                "status":   "sent",
-                "sent_at":  datetime.now(timezone.utc).isoformat()
-            }).eq("id", reminder["id"]).execute()
-            enviados += 1
-            print(f"[DISPARO] Enviado para {reminder['nome']} ({reminder['telefone']})")
+            send_reminder(telefone=telefone, unidade=unidade, nomes=dados["nomes"])
+            for rid in dados["ids"]:
+                client.table("reminders").update({
+                    "status":  "sent",
+                    "sent_at": datetime.now(timezone.utc).isoformat()
+                }).eq("id", rid).execute()
+            enviados += len(dados["nomes"])
+            print(f"[DISPARO] Enviado para unidade {unidade} ({telefone}) — {len(dados['nomes'])} pessoa(s)")
         except Exception as e:
-            erros.append(reminder["nome"])
-            print(f"[ERRO] Falha ao enviar para {reminder['nome']}: {e}")
+            erros.extend(dados["nomes"])
+            print(f"[ERRO] Falha ao enviar para {unidade}: {e}")
 
     return jsonify({"ok": True, "enviados": enviados, "erros": erros}), 200
 
@@ -156,46 +161,31 @@ def relatorio():
     if not result.data:
         return jsonify({"ok": True, "msg": "Nenhum inscrito encontrado para essa data"}), 200
 
-    # Agrupa por evento (unidade + data)
+    # Agrupa todas as unidades em um único dict para envio consolidado
     eventos = {}
-    for reminder in result.data:
-        chave = (reminder["unidade"], reminder["data_evento"])
-        if chave not in eventos:
-            eventos[chave] = {"confirmados": [], "recusados": [], "sem_resposta": [], "ids": []}
-
-        if reminder["status"] == "confirmed":
-            eventos[chave]["confirmados"].append(reminder["nome"])
-        elif reminder["status"] == "declined":
-            eventos[chave]["recusados"].append(reminder["nome"])
+    ids = []
+    for r in result.data:
+        unidade = r["unidade"]
+        if unidade not in eventos:
+            eventos[unidade] = {"confirmados": [], "recusados": [], "sem_resposta": []}
+        if r["status"] == "confirmed":
+            eventos[unidade]["confirmados"].append(r["nome"])
+        elif r["status"] == "declined":
+            eventos[unidade]["recusados"].append(r["nome"])
         else:
-            eventos[chave]["sem_resposta"].append(reminder["nome"])
+            eventos[unidade]["sem_resposta"].append(r["nome"])
+        ids.append(r["id"])
 
-        eventos[chave]["ids"].append(reminder["id"])
+    try:
+        send_report(data=data_ev, eventos=eventos)
+        for rid in ids:
+            client.table("reminders").update({"report_sent": True}).eq("id", rid).execute()
+        print(f"[RELATORIO] Enviado para evento {data_ev} — {len(eventos)} unidade(s)")
+    except Exception as e:
+        print(f"[ERRO] Falha ao enviar relatório: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
-    enviados, erros = 0, []
-
-    for (unidade, data), grupos in eventos.items():
-        try:
-            send_report(
-                unidade=unidade,
-                data=data,
-                confirmados=grupos["confirmados"],
-                recusados=grupos["recusados"],
-                sem_resposta=grupos["sem_resposta"]
-            )
-
-            for reminder_id in grupos["ids"]:
-                client.table("reminders").update({
-                    "report_sent": True
-                }).eq("id", reminder_id).execute()
-
-            enviados += 1
-            print(f"[RELATORIO] Enviado para evento {unidade} em {data}")
-        except Exception as e:
-            erros.append(unidade)
-            print(f"[ERRO] Falha ao enviar relatório para {unidade} em {data}: {e}")
-
-    return jsonify({"ok": True, "relatorios_enviados": enviados, "erros": erros}), 200
+    return jsonify({"ok": True, "relatorios_enviados": 1, "erros": []}), 200
 
 
 @app.route("/painel", methods=["GET"])

@@ -13,20 +13,25 @@ HEADERS         = {
 SECRET_KEY      = os.getenv("AGILE_SECRETKEY")
 ORGANIZER_NUMBER = os.getenv("ORGANIZER_NUMBER")
 
+# --- Edite as mensagens abaixo ---
+
 REMINDER_TEMPLATE = (
-    "Olá!\n\n"
-    "O evento da unidade *{unidade}* está confirmado para o dia *{data}*, "
-    "em *{local}*.\n\n"
-    "A equipe da sua unidade irá comparecer?\n\n"
+    "Unidade: *{unidade}*\n"
+    "{lista_nomes}\n\n"
+    "Confirma a presença dessas pessoas?\n\n"
     "Responda *SIM* para confirmar ou *NÃO* para cancelar."
 )
 
-REPORT_TEMPLATE = (
-    "Resumo do evento - *{unidade}* - {data}\n\n"
-    "Confirmados ({total_confirmados}):\n{lista_confirmados}\n\n"
-    "Recusados ({total_recusados}):\n{lista_recusados}\n\n"
-    "Sem resposta ({total_sem_resposta}):\n{lista_sem_resposta}"
-)
+# Cabeçalho do relatório consolidado (uma única mensagem com todas as unidades)
+REPORT_HEADER = "Relatório - {data}\n"
+
+# Linha por unidade quando há confirmações
+REPORT_LINHA_CONFIRMADOS = "Unidade: {unidade}\n{total} confirmado(s)"
+
+# Linha por unidade quando ninguém respondeu
+REPORT_LINHA_SEM_RESPOSTA = "Unidade: {unidade}\nNão respondeu"
+
+# ---------------------------------
 
 
 def _send(number: str, body: str):
@@ -44,29 +49,27 @@ def _send(number: str, body: str):
     return response.json()
 
 
-def send_reminder(telefone: str, data: str, unidade: str, local: str):
-    body = REMINDER_TEMPLATE.format(
-        data=data,
-        unidade=unidade,
-        local=local
-    )
+def send_reminder(telefone: str, unidade: str, nomes: list):
+    lista = "\n".join(nomes)
+    body = REMINDER_TEMPLATE.format(unidade=unidade, lista_nomes=lista)
     return _send(telefone, body)
 
 
-def send_report(unidade: str, data: str, confirmados: list, recusados: list, sem_resposta: list):
-    def format_list(pessoas):
-        if not pessoas:
-            return "  (nenhum)"
-        return "\n".join(f"  - {p}" for p in pessoas)
+def send_report(data: str, eventos: dict):
+    """
+    eventos: {unidade: {"confirmados": [...], "recusados": [...], "sem_resposta": [...]}}
+    Envia uma única mensagem consolidada com todas as unidades.
+    """
+    linhas = [REPORT_HEADER.format(data=data)]
 
-    body = REPORT_TEMPLATE.format(
-        unidade=unidade,
-        data=data,
-        total_confirmados=len(confirmados),
-        lista_confirmados=format_list(confirmados),
-        total_recusados=len(recusados),
-        lista_recusados=format_list(recusados),
-        total_sem_resposta=len(sem_resposta),
-        lista_sem_resposta=format_list(sem_resposta)
-    )
+    for unidade, grupos in eventos.items():
+        responderam = len(grupos["confirmados"]) + len(grupos["recusados"])
+        confirmados = len(grupos["confirmados"])
+
+        if responderam == 0:
+            linhas.append(REPORT_LINHA_SEM_RESPOSTA.format(unidade=unidade))
+        else:
+            linhas.append(REPORT_LINHA_CONFIRMADOS.format(unidade=unidade, total=confirmados))
+
+    body = "\n\n".join(linhas)
     return _send(ORGANIZER_NUMBER, body)
