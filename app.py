@@ -249,18 +249,23 @@ def receive_treinamento():
         email   = achar("email")
         crm     = achar("crm")
 
-        # Coleta todos os treinamentos selecionados (campos CHECKBOXES "Online" / "Prescencial")
+        # Coleta todos os treinamentos selecionados
         treinamentos_selecionados = []
         for f in fields:
             label_lower = f["label"].lower().strip()
             tipo  = f.get("type", "")
             valor = f.get("value")
-            # Apenas campos principais (sem parênteses = não são sub-campos expandidos)
+
+            # CHECKBOXES "Online" / "Prescencial"
             if tipo == "CHECKBOXES" and isinstance(valor, list) and "(" not in f["label"]:
                 if any(label_lower == t or label_lower.startswith(t) for t in TRAINING_LABELS):
                     options = f.get("options", [])
                     selected = [o["text"] for o in options if o["id"] in valor]
                     treinamentos_selecionados.extend(selected)
+
+            # HIDDEN_FIELDS — label é o nome do treinamento (formulário por evento específico)
+            elif tipo == "HIDDEN_FIELDS" and f["label"].strip():
+                treinamentos_selecionados.append(f["label"].strip())
     else:
         nome    = payload.get("nome", "").strip()
         email   = payload.get("email", "").strip()
