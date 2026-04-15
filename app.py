@@ -196,12 +196,18 @@ def receive_treinamento():
 
     # Formato Tally: { "data": { "fields": [ { "label": "...", "value": "..." } ] } }
     if "data" in payload and "fields" in payload.get("data", {}):
-        campos = {f["label"].strip(): f["value"] for f in payload["data"]["fields"]}
-        nome        = str(campos.get("Nome completo", campos.get("Nome Completo", ""))).strip()
-        email       = str(campos.get("Seu email para envio do certificado", campos.get("Qual seu email", ""))).strip()
-        treinamento = str(campos.get("Qual o Treinamento de Hoje?", "")).strip()
-        data_tr     = str(campos.get("Qual data de hoje?", campos.get("Data de hoje", ""))).strip()
-        unidade     = str(campos.get("Qual sua Unidade?", "")).strip()
+        # Busca por palavra-chave no label (case-insensitive) — robusto a variações de texto
+        def achar(keyword):
+            for f in payload["data"]["fields"]:
+                if keyword.lower() in f["label"].lower():
+                    return str(f["value"]).strip()
+            return ""
+
+        nome        = achar("nome")
+        email       = achar("email")
+        treinamento = achar("treinamento")
+        data_tr     = achar("data")
+        unidade     = achar("unidade")
     else:
         # Formato flat (Power Automate)
         nome        = payload.get("nome", "").strip()
