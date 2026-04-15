@@ -274,6 +274,21 @@ def receive_treinamento():
         tr      = payload.get("treinamento", "").strip()
         treinamentos_selecionados = [tr] if tr else []
 
+    # Fallback: busca treinamento pelo tally_form_id no cronograma
+    if not treinamentos_selecionados:
+        form_id = payload.get("data", {}).get("formId", "")
+        if form_id:
+            cron_form = (
+                client.table("cronograma")
+                .select("treinamento")
+                .eq("tally_form_id", form_id)
+                .limit(1)
+                .execute()
+            )
+            if cron_form.data:
+                treinamentos_selecionados = [cron_form.data[0]["treinamento"]]
+                print(f"[TREINAMENTO] Treinamento encontrado pelo formId {form_id}: {treinamentos_selecionados[0]}")
+
     if not nome or not treinamentos_selecionados:
         print(f"[TREINAMENTO] Campos ausentes — nome={nome} treinamentos={treinamentos_selecionados}")
         return jsonify({"error": "Campos obrigatórios ausentes: nome, treinamento"}), 400
