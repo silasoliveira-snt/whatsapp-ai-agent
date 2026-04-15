@@ -12,13 +12,28 @@ LOCAL_EVENTO = os.getenv("LOCAL_EVENTO", "")
 
 @app.route("/webhook/form", methods=["POST"])
 def receive_form():
-    """Recebe nova inscrição enviada pelo Power Automate."""
-    data = request.json
+    """Recebe nova inscrição — suporta Tally e payload flat."""
+    payload = request.json
+    print(f"[FORM] Payload recebido: {payload}")
 
-    nome       = data.get("nome", "").strip()
-    unidade    = data.get("unidade", "").strip()
-    tel_pessoa = re.sub(r"\D", "", data.get("telefone", ""))  # telefone da pessoa inscrita (guardado, não usado no disparo)
-    data_ev    = data.get("data_evento", "").strip()          # formato esperado: YYYY-MM-DD
+    # Formato Tally
+    if "data" in payload and "fields" in payload.get("data", {}):
+        def achar(keyword):
+            for f in payload["data"]["fields"]:
+                if keyword.lower() in f["label"].lower():
+                    return str(f["value"]).strip()
+            return ""
+
+        nome       = achar("nome")
+        unidade    = achar("unidade")
+        tel_pessoa = re.sub(r"\D", "", achar("telefone"))
+        data_ev    = achar("data")
+    else:
+        # Formato flat (Power Automate)
+        nome       = payload.get("nome", "").strip()
+        unidade    = payload.get("unidade", "").strip()
+        tel_pessoa = re.sub(r"\D", "", payload.get("telefone", ""))
+        data_ev    = payload.get("data_evento", "").strip()
 
     if not all([nome, unidade, data_ev]):
         return jsonify({"error": "Campos obrigatórios ausentes: nome, unidade, data_evento"}), 400
