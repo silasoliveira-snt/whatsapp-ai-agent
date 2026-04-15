@@ -4,7 +4,11 @@ from datetime import date
 from openai import OpenAI
 from services.supabase_client import client as supabase
 
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+def _get_openai_client():
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY não configurada.")
+    return OpenAI(api_key=api_key)
 
 SYSTEM_PROMPT = """Você é um assistente de gestão da Onodera Estética.
 Responda sempre em português, de forma direta e concisa, sem formatação markdown.
@@ -137,7 +141,7 @@ def process_gestor_message(mensagem: str) -> str:
     ]
 
     for _ in range(5):
-        response = openai_client.chat.completions.create(
+        response = _get_openai_client().chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
             tools=TOOLS,
