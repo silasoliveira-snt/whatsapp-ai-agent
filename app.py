@@ -190,16 +190,28 @@ def relatorio():
 
 @app.route("/webhook/treinamento", methods=["POST"])
 def receive_treinamento():
-    """Recebe nova presença em treinamento enviada pelo Power Automate."""
-    data = request.json
+    """Recebe nova presença em treinamento — suporta Tally e payload flat."""
+    payload = request.json
+    print(f"[TREINAMENTO] Payload recebido: {payload}")
 
-    nome        = data.get("nome", "").strip()
-    email       = data.get("email", "").strip()
-    treinamento = data.get("treinamento", "").strip()
-    data_tr     = data.get("data_treinamento", "").strip()
-    unidade     = data.get("unidade", "").strip()
+    # Formato Tally: { "data": { "fields": [ { "label": "...", "value": "..." } ] } }
+    if "data" in payload and "fields" in payload.get("data", {}):
+        campos = {f["label"].strip(): f["value"] for f in payload["data"]["fields"]}
+        nome        = str(campos.get("Nome completo", campos.get("Nome Completo", ""))).strip()
+        email       = str(campos.get("Seu email para envio do certificado", campos.get("Qual seu email", ""))).strip()
+        treinamento = str(campos.get("Qual o Treinamento de Hoje?", "")).strip()
+        data_tr     = str(campos.get("Qual data de hoje?", campos.get("Data de hoje", ""))).strip()
+        unidade     = str(campos.get("Qual sua Unidade?", "")).strip()
+    else:
+        # Formato flat (Power Automate)
+        nome        = payload.get("nome", "").strip()
+        email       = payload.get("email", "").strip()
+        treinamento = payload.get("treinamento", "").strip()
+        data_tr     = payload.get("data_treinamento", "").strip()
+        unidade     = payload.get("unidade", "").strip()
 
     if not all([nome, email, treinamento, data_tr]):
+        print(f"[TREINAMENTO] Campos ausentes — nome={nome} email={email} treinamento={treinamento} data={data_tr}")
         return jsonify({"error": "Campos obrigatórios ausentes: nome, email, treinamento, data_treinamento"}), 400
 
     # Aceita dd/MM/yyyy ou yyyy-MM-dd
