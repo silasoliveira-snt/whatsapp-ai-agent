@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from datetime import date
 from openai import OpenAI
 from services.supabase_client import client as supabase
@@ -159,7 +160,50 @@ def _execute_tool(name: str, args: dict) -> str:
     return "Ferramenta desconhecida."
 
 
+_MESES = {
+    "jan": "01", "fev": "02", "mar": "03", "abr": "04",
+    "mai": "05", "jun": "06", "jul": "07", "ago": "08",
+    "set": "09", "out": "10", "nov": "11", "dez": "12",
+}
+
+_KW_CONFIRMAR  = re.compile(r"confirm|entrar em contato|contato com respons", re.I)
+_KW_RELATORIO  = re.compile(r"relat[oó]rio|quem confirmou|quem respondeu|status", re.I)
+_DATA_DDMM     = re.compile(r"(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?")
+_DATA_DDMES    = re.compile(r"(\d{1,2})\s+de\s+([a-z]+)", re.I)
+
+
+def _extrair_data(texto: str) -> str | None:
+    ano = date.today().year
+    m = _DATA_DDMM.search(texto)
+    if m:
+        dia, mes = m.group(1).zfill(2), m.group(2).zfill(2)
+        return f"{ano}-{mes}-{dia}"
+    m = _DATA_DDMES.search(texto)
+    if m:
+        dia  = m.group(1).zfill(2)
+        nome = m.group(2)[:3].lower()
+        mes  = _MESES.get(nome)
+        if mes:
+            return f"{ano}-{mes}-{dia}"
+    return None
+
+
 def process_gestor_message(mensagem: str) -> str:
+    # Roteamento direto por palavras-chave — contorna limitações do LLM
+    if _KW_CONFIRMAR.search(mensagem):
+        data = _extrair_data(mensagem)
+        if not data:
+            return "Para qual data devo enviar a confirmação de presença? (ex: 15/05)"
+        print(f"[AGENTE] Roteamento direto → confirmar_presenca({data})")
+        return confirmar_presenca(data)
+
+    if _KW_RELATORIO.search(mensagem):
+        data = _extrair_data(mensagem)
+        if not data:
+            return "Para qual data devo gerar o relatório de confirmações? (ex: 15/05)"
+        print(f"[AGENTE] Roteamento direto → relatorio_confirmacoes({data})")
+        return relatorio_confirmacoes(data)
+
     today  = date.today().strftime("%d/%m/%Y")
     client = _get_openai_client()
 
