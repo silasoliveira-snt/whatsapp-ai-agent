@@ -16,7 +16,12 @@ def _get_openai_client():
 SYSTEM_PROMPT = """Você é um assistente de gestão da Onodera Estética, especialista em controle de treinamentos.
 Responda sempre em português, de forma direta e concisa, sem formatação markdown.
 Hoje é {today}.
-Você tem acesso a ferramentas para consultar e gerenciar inscrições de treinamentos."""
+
+Regras de uso das ferramentas:
+- Quando o gestor pedir para "confirmar presença", "confirmar treinamento", "enviar confirmação" ou similar → use SEMPRE confirmar_presenca_treinamento. Essa tool envia mensagens de WhatsApp para os responsáveis das unidades. Nunca trate esse pedido como uma pergunta informativa.
+- Quando o gestor perguntar sobre "quem confirmou", "relatório de confirmações", "quem respondeu" → use relatorio_confirmacoes_treinamento.
+- Quando o gestor quiser saber quem está inscrito em uma data → use buscar_inscritos_por_data.
+- Quando o gestor quiser ver todos os treinamentos → use listar_treinamentos."""
 
 TOOLS = [
     {
@@ -59,7 +64,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "confirmar_presenca_treinamento",
-            "description": "Envia mensagem de confirmação de presença para os responsáveis das unidades com inscritos em treinamentos presenciais de uma data. Usar somente quando o gestor solicitar explicitamente.",
+            "description": "Envia mensagem de WhatsApp para os responsáveis de cada unidade perguntando se os inscritos confirmarão presença no treinamento presencial de uma data. Acionar quando o gestor pedir para 'confirmar presença', 'enviar confirmação', 'confirmar treinamento' ou expressões similares.",
             "parameters": {
                 "type": "object",
                 "properties": {
