@@ -190,6 +190,16 @@ def _execute_tool(name: str, args: dict) -> str | None:
     return "Ferramenta desconhecida."
 
 
+# Tools que retornam dados formatados para exibição — resultado vai direto ao usuário
+_DISPLAY_TOOLS = {
+    "preview_confirmacao_treinamento",
+    "buscar_inscritos_por_data",
+    "buscar_medicos_por_data",
+    "listar_treinamentos",
+    "relatorio_confirmacoes_treinamento",
+}
+
+
 def process_gestor_message(mensagem: str) -> str:
     today  = date.today().strftime("%d/%m/%Y")
     client = _get_openai_client()
@@ -207,8 +217,8 @@ def process_gestor_message(mensagem: str) -> str:
             tool_choice="required"
         )
 
-        msg = response.choices[0].message
-        tc  = msg.tool_calls[0]
+        msg  = response.choices[0].message
+        tc   = msg.tool_calls[0]
         args = json.loads(tc.function.arguments)
 
         print(f"[AGENTE] Tool chamada: {tc.function.name} | args: {args}")
@@ -217,6 +227,10 @@ def process_gestor_message(mensagem: str) -> str:
             return args["mensagem"]
 
         result = _execute_tool(tc.function.name, args)
+
+        # Dados de consulta: retorna direto sem passar pelo LLM de novo
+        if tc.function.name in _DISPLAY_TOOLS:
+            return result
 
         messages.append(msg)
         messages.append({
