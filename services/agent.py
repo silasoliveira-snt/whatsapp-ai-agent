@@ -43,7 +43,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "listar_treinamentos",
-            "description": "Lista todos os treinamentos agendados no cronograma com data, tipo e público.",
+            "description": "Lista os próximos treinamentos agendados a partir de hoje. Usar quando o gestor perguntar sobre próximos treinamentos, o que tem agendado, cronograma, etc.",
             "parameters": {"type": "object", "properties": {}}
         }
     },
@@ -135,19 +135,21 @@ TOOLS = [
 
 
 def _listar_treinamentos() -> str:
+    hoje = date.today().isoformat()
     result = (
         supabase.table("cronograma")
         .select("data, treinamento, tipo, publico")
+        .gte("data", hoje)
         .order("data")
         .execute()
     )
     if not result.data:
-        return "Nenhum treinamento agendado."
+        return "Nenhum treinamento agendado a partir de hoje."
     linhas = [
         f"{r['data']} — {r['treinamento']} ({r['tipo']}, {r['publico']})"
         for r in result.data
     ]
-    return "\n".join(linhas)
+    return f"{len(result.data)} treinamento(s) agendado(s):\n\n" + "\n".join(linhas)
 
 
 def _buscar_inscritos(data: str) -> str:
