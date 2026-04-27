@@ -3,7 +3,7 @@ import json
 from datetime import date
 from openai import OpenAI
 from services.supabase_client import client as supabase
-from services.treinamentos import confirmar_presenca, relatorio_confirmacoes
+from services.treinamentos import preview_confirmacao, confirmar_presenca, relatorio_confirmacoes
 
 
 def _get_openai_client():
@@ -19,7 +19,10 @@ Hoje é {today}.
 
 Você SEMPRE deve usar uma das ferramentas disponíveis para responder — nunca responda diretamente sem usar uma ferramenta.
 Para respostas de texto simples, use a ferramenta "responder".
-Para qualquer ação ou consulta, use a ferramenta correspondente."""
+
+Fluxo obrigatório para confirmação de presença:
+1. Quando o gestor pedir para confirmar presença ou entrar em contato com as unidades → use PRIMEIRO preview_confirmacao_treinamento para mostrar quem vai receber.
+2. Somente quando o gestor disser "pode enviar", "confirma", "sim" ou similar após o preview → use confirmar_presenca_treinamento para disparar as mensagens."""
 
 TOOLS = [
     {
@@ -67,6 +70,20 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "data": {"type": "string", "description": "Data no formato YYYY-MM-DD, ex: 2026-05-07"}
+                },
+                "required": ["data"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "preview_confirmacao_treinamento",
+            "description": "Mostra ao gestor quais unidades e inscritos receberão a mensagem de confirmação, sem enviar nada. Usar como primeiro passo sempre que o gestor pedir para confirmar presença ou entrar em contato com as unidades.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data": {"type": "string", "description": "Data no formato YYYY-MM-DD, ex: 2026-05-15"}
                 },
                 "required": ["data"]
             }
@@ -164,6 +181,8 @@ def _execute_tool(name: str, args: dict) -> str | None:
         return _buscar_inscritos(args["data"])
     if name == "buscar_medicos_por_data":
         return _buscar_medicos(args["data"])
+    if name == "preview_confirmacao_treinamento":
+        return preview_confirmacao(args["data"])
     if name == "confirmar_presenca_treinamento":
         return confirmar_presenca(args["data"])
     if name == "relatorio_confirmacoes_treinamento":

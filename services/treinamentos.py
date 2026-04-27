@@ -3,6 +3,58 @@ from services.supabase_client import client
 from services.whatsapp import _send
 
 
+def preview_confirmacao(data: str) -> str:
+    """Mostra quais unidades receberão a mensagem de confirmação, sem enviar."""
+    cron = (
+        client.table("cronograma")
+        .select("treinamento")
+        .eq("data", data)
+        .neq("tipo", "online")
+        .execute()
+    )
+
+    treinamentos_presenciais = [r["treinamento"] for r in (cron.data or [])]
+    if not treinamentos_presenciais:
+        return f"Nenhum treinamento presencial em {data}."
+
+    result = (
+        client.table("treinamentos")
+        .select("nome, unidade, telefone_responsavel")
+        .eq("data_treinamento", data)
+        .in_("treinamento", treinamentos_presenciais)
+        .is_("confirmacao_status", "null")
+        .execute()
+    )
+
+    registros = result.data or []
+    if not registros:
+        return f"Nenhum inscrito pendente de confirmação para {data}."
+
+    try:
+        data_fmt = datetime.strptime(data, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except Exception:
+        data_fmt = data
+
+    grupos, sem_telefone = {}, []
+    for r in registros:
+        telefone = r.get("telefone_responsavel") or ""
+        unidade  = r.get("unidade") or "Sem unidade"
+        if not telefone:
+            sem_telefone.append(f"{unidade} — {r['nome']}")
+            continue
+        grupos.setdefault(unidade, []).append(r["nome"])
+
+    linhas = [f"Preview — confirmações a enviar em {data_fmt}\n"]
+    for unidade, nomes in grupos.items():
+        linhas.append(f"• {unidade} ({len(nomes)} pessoa(s)):")
+        linhas += [f"    - {n}" for n in nomes]
+    if sem_telefone:
+        linhas.append(f"\nSem telefone cadastrado ({len(sem_telefone)}):")
+        linhas += [f"  ○ {n}" for n in sem_telefone]
+    linhas.append("\nPara enviar, responda: pode enviar")
+    return "\n".join(linhas)
+
+
 def confirmar_presenca(data: str) -> str:
     """Envia confirmação de presença para inscritos em treinamentos presenciais de uma data."""
     cron = (
