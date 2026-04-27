@@ -179,7 +179,7 @@ def ativar_treinamento(data: str) -> str:
     """Envia mensagem de ativação para o grupo geral dos treinamentos de uma data."""
     cron = (
         client.table("cronograma")
-        .select("treinamento, link_inscricao, numero_grupo")
+        .select("treinamento, link_inscricao, numero_grupo, mensagem_customizada")
         .eq("data", data)
         .neq("tipo", "online")
         .execute()
@@ -204,13 +204,18 @@ def ativar_treinamento(data: str) -> str:
         grupo   = r["numero_grupo"]
         link    = r.get("link_inscricao") or ""
 
-        mensagem = (
-            f"Boa tarde, rede Onodera!\n"
-            f"Passando para reforçar a participação no *{nome_tr}*!\n"
-            f"Contamos com a presença de vocês!"
-        )
-        if link:
-            mensagem += f"\n\nInscrições: {link}"
+        if r.get("mensagem_customizada"):
+            mensagem = r["mensagem_customizada"]
+            if link:
+                mensagem += f"\n\nInscrições: {link}"
+        else:
+            mensagem = (
+                f"Boa tarde, rede Onodera!\n"
+                f"Passando para reforçar a participação no *{nome_tr}*!\n"
+                f"Contamos com a presença de vocês!"
+            )
+            if link:
+                mensagem += f"\n\nInscrições: {link}"
 
         try:
             _send(grupo, mensagem)
