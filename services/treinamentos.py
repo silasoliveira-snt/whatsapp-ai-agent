@@ -63,9 +63,18 @@ def buscar_inscritos(data: str) -> str:
         .eq("data_treinamento", data)
         .execute()
     )
-    registros = result.data or []
-    if not registros:
+    todos = result.data or []
+    if not todos:
         return f"Nenhum inscrito para {data}."
+
+    # 1 registro por (treinamento, nome)
+    vistos: set[tuple] = set()
+    registros = []
+    for r in todos:
+        chave = (r["treinamento"], r["nome"])
+        if chave not in vistos:
+            vistos.add(chave)
+            registros.append(r)
 
     grupos = {}
     for r in registros:
@@ -75,7 +84,8 @@ def buscar_inscritos(data: str) -> str:
         f"{tr}:\n" + "\n".join(f"  {p}" for p in pessoas)
         for tr, pessoas in grupos.items()
     ]
-    return f"{len(registros)} inscrito(s) em {data}:\n\n" + "\n\n".join(linhas)
+    total = sum(len(p) for p in grupos.values())
+    return f"{total} inscrito(s) em {data}:\n\n" + "\n\n".join(linhas)
 
 
 def buscar_medicos(data: str) -> str:
@@ -85,7 +95,14 @@ def buscar_medicos(data: str) -> str:
         .eq("data_treinamento", data)
         .execute()
     )
-    medicos = [r for r in (result.data or []) if r.get("crm")]
+    todos = [r for r in (result.data or []) if r.get("crm")]
+    # 1 registro por CRM — mantém o primeiro encontrado
+    vistos: dict[str, dict] = {}
+    for r in todos:
+        if r["crm"] not in vistos:
+            vistos[r["crm"]] = r
+    medicos = list(vistos.values())
+
     if not medicos:
         return f"Nenhum médico inscrito para {data}."
     linhas = [f"{r['unidade']}, {r['nome']}, CRM: {r['crm']}" for r in medicos]
