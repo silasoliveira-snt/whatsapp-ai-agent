@@ -1,10 +1,18 @@
-from datetime import datetime
+from datetime import date, datetime
 from services.supabase_client import client
 from services.whatsapp import _send
 
 
-def preview_confirmacao(data: str) -> str:
-    """Mostra quais unidades receberão a mensagem de confirmação, sem enviar."""
+# --- helpers privados ---
+
+def _fmt_data(data: str) -> str:
+    try:
+        return datetime.strptime(data, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except Exception:
+        return data
+
+
+def _get_presenciais(data: str) -> list[str]:
     cron = (
         client.table("cronograma")
         .select("treinamento")
@@ -12,28 +20,96 @@ def preview_confirmacao(data: str) -> str:
         .neq("tipo", "online")
         .execute()
     )
+    return [r["treinamento"] for r in (cron.data or [])]
 
-    treinamentos_presenciais = [r["treinamento"] for r in (cron.data or [])]
-    if not treinamentos_presenciais:
+
+def _montar_mensagem_ativacao(r: dict) -> str:
+    nome_tr  = r["treinamento"]
+    link     = r.get("link_inscricao") or ""
+    mensagem = r.get("mensagem_customizada") or (
+        f"Boa tarde, rede Onodera!\n"
+        f"Passando para reforçar a participação no *{nome_tr}*!\n"
+        f"Contamos com a presença de vocês!"
+    )
+    if link:
+        mensagem += f"\n\nInscrições: {link}"
+    return mensagem
+
+
+# --- queries (usadas pelo agente) ---
+
+def listar_treinamentos() -> str:
+    hoje   = date.today().isoformat()
+    result = (
+        client.table("cronograma")
+        .select("data, treinamento, tipo, publico")
+        .gte("data", hoje)
+        .order("data")
+        .execute()
+    )
+    if not result.data:
+        return "Nenhum treinamento agendado a partir de hoje."
+    linhas = [
+        f"{r['data']} — {r['treinamento']} ({r['tipo']}, {r['publico']})"
+        for r in result.data
+    ]
+    return f"{len(result.data)} treinamento(s) agendado(s):\n\n" + "\n".join(linhas)
+
+
+def buscar_inscritos(data: str) -> str:
+    result = (
+        client.table("treinamentos")
+        .select("nome, unidade, treinamento")
+        .eq("data_treinamento", data)
+        .execute()
+    )
+    registros = result.data or []
+    if not registros:
+        return f"Nenhum inscrito para {data}."
+
+    grupos = {}
+    for r in registros:
+        grupos.setdefault(r["treinamento"], []).append(f"{r['unidade']} - {r['nome']}")
+
+    linhas = [
+        f"{tr}:\n" + "\n".join(f"  {p}" for p in pessoas)
+        for tr, pessoas in grupos.items()
+    ]
+    return f"{len(registros)} inscrito(s) em {data}:\n\n" + "\n\n".join(linhas)
+
+
+def buscar_medicos(data: str) -> str:
+    result = (
+        client.table("treinamentos")
+        .select("nome, unidade, crm, treinamento")
+        .eq("data_treinamento", data)
+        .execute()
+    )
+    medicos = [r for r in (result.data or []) if r.get("crm")]
+    if not medicos:
+        return f"Nenhum médico inscrito para {data}."
+    linhas = [f"{r['unidade']}, {r['nome']}, CRM: {r['crm']}" for r in medicos]
+    return f"{len(medicos)} médico(s) inscrito(s):\n" + "\n".join(linhas)
+
+
+# --- ações ---
+
+def preview_confirmacao(data: str) -> str:
+    presenciais = _get_presenciais(data)
+    if not presenciais:
         return f"Nenhum treinamento presencial em {data}."
 
     result = (
         client.table("treinamentos")
         .select("nome, unidade, telefone_responsavel")
         .eq("data_treinamento", data)
-        .in_("treinamento", treinamentos_presenciais)
+        .in_("treinamento", presenciais)
         .is_("confirmacao_status", "null")
         .execute()
     )
-
     registros = result.data or []
     if not registros:
         return f"Nenhum inscrito pendente de confirmação para {data}."
-
-    try:
-        data_fmt = datetime.strptime(data, "%Y-%m-%d").strftime("%d/%m/%Y")
-    except Exception:
-        data_fmt = data
 
     grupos, sem_telefone = {}, []
     for r in registros:
@@ -44,7 +120,7 @@ def preview_confirmacao(data: str) -> str:
             continue
         grupos.setdefault(unidade, []).append(r["nome"])
 
-    linhas = [f"Preview — confirmações a enviar em {data_fmt}\n"]
+    linhas = [f"Preview — confirmações a enviar em {_fmt_data(data)}\n"]
     for unidade, nomes in grupos.items():
         linhas.append(f"• {unidade} ({len(nomes)} pessoa(s)):")
         linhas += [f"    - {n}" for n in nomes]
@@ -56,40 +132,23 @@ def preview_confirmacao(data: str) -> str:
 
 
 def confirmar_presenca(data: str) -> str:
-    """Envia confirmação de presença para inscritos em treinamentos presenciais de uma data."""
-    cron = (
-        client.table("cronograma")
-        .select("treinamento")
-        .eq("data", data)
-        .neq("tipo", "online")
-        .execute()
-    )
-
-    treinamentos_presenciais = [r["treinamento"] for r in (cron.data or [])]
-    if not treinamentos_presenciais:
+    presenciais = _get_presenciais(data)
+    if not presenciais:
         return f"Nenhum treinamento presencial em {data}."
 
     result = (
         client.table("treinamentos")
         .select("*")
         .eq("data_treinamento", data)
-        .in_("treinamento", treinamentos_presenciais)
+        .in_("treinamento", presenciais)
         .is_("confirmacao_status", "null")
         .execute()
     )
-
     registros = result.data or []
     if not registros:
         return f"Nenhum inscrito pendente de confirmação para {data}."
 
-    try:
-        data_fmt = datetime.strptime(data, "%Y-%m-%d").strftime("%d/%m/%Y")
-    except Exception:
-        data_fmt = data
-
-    grupos      = {}
-    sem_telefone = []
-
+    grupos, sem_telefone = {}, []
     for r in registros:
         telefone = r.get("telefone_responsavel") or ""
         unidade  = r.get("unidade") or "Sem unidade"
@@ -101,6 +160,7 @@ def confirmar_presenca(data: str) -> str:
         grupos[chave]["nomes"].append(r["nome"])
         grupos[chave]["ids"].append(r["id"])
 
+    data_fmt       = _fmt_data(data)
     enviados, erros = [], []
 
     for (unidade, telefone), dados in grupos.items():
@@ -134,12 +194,10 @@ def confirmar_presenca(data: str) -> str:
     if erros:
         linhas.append(f"\nErros:")
         linhas += [f"  ✗ {e}" for e in erros]
-
     return "\n".join(linhas)
 
 
 def relatorio_confirmacoes(data: str) -> str:
-    """Retorna relatório de confirmados, recusados e sem resposta de uma data."""
     result = (
         client.table("treinamentos")
         .select("nome, unidade, treinamento, confirmacao_status")
@@ -147,21 +205,15 @@ def relatorio_confirmacoes(data: str) -> str:
         .in_("confirmacao_status", ["sent", "confirmed", "declined"])
         .execute()
     )
-
     registros = result.data or []
     if not registros:
         return f"Nenhuma confirmação enviada para {data}."
-
-    try:
-        data_fmt = datetime.strptime(data, "%Y-%m-%d").strftime("%d/%m/%Y")
-    except Exception:
-        data_fmt = data
 
     confirmados = [r for r in registros if r["confirmacao_status"] == "confirmed"]
     recusados   = [r for r in registros if r["confirmacao_status"] == "declined"]
     pendentes   = [r for r in registros if r["confirmacao_status"] == "sent"]
 
-    linhas = [f"Confirmações — {data_fmt}"]
+    linhas = [f"Confirmações — {_fmt_data(data)}"]
     if confirmados:
         linhas.append(f"\n✓ Confirmados ({len(confirmados)}):")
         linhas += [f"  {r['unidade']} — {r['nome']}" for r in confirmados]
@@ -171,12 +223,10 @@ def relatorio_confirmacoes(data: str) -> str:
     if pendentes:
         linhas.append(f"\n○ Sem resposta ({len(pendentes)}):")
         linhas += [f"  {r['unidade']} — {r['nome']}" for r in pendentes]
-
     return "\n".join(linhas)
 
 
-def ativar_treinamento(data: str) -> str:
-    """Envia mensagem de ativação para o grupo geral dos treinamentos de uma data."""
+def preview_ativacao(data: str) -> str:
     cron = (
         client.table("cronograma")
         .select("treinamento, link_inscricao, numero_grupo, mensagem_customizada")
@@ -184,53 +234,55 @@ def ativar_treinamento(data: str) -> str:
         .neq("tipo", "online")
         .execute()
     )
-
-    registros = [r for r in (cron.data or []) if r.get("numero_grupo")]
-
     if not cron.data:
         return f"Nenhum treinamento presencial em {data}."
-    if not registros:
-        return f"Nenhum treinamento com grupo configurado para {data}. Preencha numero_grupo e link_inscricao no cronograma."
 
-    try:
-        data_fmt = datetime.strptime(data, "%Y-%m-%d").strftime("%d/%m/%Y")
-    except Exception:
-        data_fmt = data
+    registros = [r for r in cron.data if r.get("numero_grupo")]
+    if not registros:
+        return f"Nenhum treinamento com grupo configurado para {data}. Preencha numero_grupo no cronograma."
+
+    linhas = [f"Preview — ativação de {_fmt_data(data)}\n"]
+    for r in registros:
+        mensagem = _montar_mensagem_ativacao(r)
+        linhas.append(f"• {r['treinamento']}")
+        linhas.append(f"  Grupo: {r['numero_grupo']}")
+        linhas.append(f"  Mensagem:\n{mensagem}\n")
+    linhas.append("Para enviar, responda: pode enviar")
+    return "\n".join(linhas)
+
+
+def ativar_treinamento(data: str) -> str:
+    cron = (
+        client.table("cronograma")
+        .select("treinamento, link_inscricao, numero_grupo, mensagem_customizada")
+        .eq("data", data)
+        .neq("tipo", "online")
+        .execute()
+    )
+    if not cron.data:
+        return f"Nenhum treinamento presencial em {data}."
+
+    registros = [r for r in cron.data if r.get("numero_grupo")]
+    if not registros:
+        return f"Nenhum treinamento com grupo configurado para {data}. Preencha numero_grupo no cronograma."
 
     enviados, erros = [], []
-
     for r in registros:
-        nome_tr = r["treinamento"]
-        grupo   = r["numero_grupo"]
-        link    = r.get("link_inscricao") or ""
-
-        if r.get("mensagem_customizada"):
-            mensagem = r["mensagem_customizada"]
-            if link:
-                mensagem += f"\n\nInscrições: {link}"
-        else:
-            mensagem = (
-                f"Boa tarde, rede Onodera!\n"
-                f"Passando para reforçar a participação no *{nome_tr}*!\n"
-                f"Contamos com a presença de vocês!"
-            )
-            if link:
-                mensagem += f"\n\nInscrições: {link}"
-
+        grupo    = r["numero_grupo"]
+        mensagem = _montar_mensagem_ativacao(r)
         try:
             _send(grupo, mensagem)
-            enviados.append(nome_tr)
-            print(f"[ATIVAÇÃO] Enviado para grupo {grupo}: {nome_tr}")
+            enviados.append(r["treinamento"])
+            print(f"[ATIVAÇÃO] Enviado para grupo {grupo}: {r['treinamento']}")
         except Exception as e:
-            erros.append(f"{nome_tr}: {e}")
-            print(f"[ATIVAÇÃO] Erro ao enviar {nome_tr}: {e}")
+            erros.append(f"{r['treinamento']}: {e}")
+            print(f"[ATIVAÇÃO] Erro ao enviar {r['treinamento']}: {e}")
 
-    linhas = [f"Ativação — {data_fmt}"]
+    linhas = [f"Ativação — {_fmt_data(data)}"]
     if enviados:
         linhas.append(f"\n{len(enviados)} treinamento(s) ativado(s):")
         linhas += [f"  ✓ {t}" for t in enviados]
     if erros:
         linhas.append(f"\nErros:")
         linhas += [f"  ✗ {e}" for e in erros]
-
     return "\n".join(linhas)
