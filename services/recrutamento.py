@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import os
 
 import pdfplumber
@@ -8,6 +9,8 @@ from openai import OpenAI
 
 from services.supabase_client import client
 from services.whatsapp import _send
+
+log = logging.getLogger(__name__)
 
 GRUPO_FRANQUEADOS   = os.getenv("GRUPO_FRANQUEADOS")
 LINK_COMPORTAMENTAL = os.getenv("LINK_COMPORTAMENTAL")
@@ -29,8 +32,17 @@ def _extrair_texto_pdf(url: str) -> str:
         with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
             return "\n".join(p.extract_text() or "" for p in pdf.pages).strip()
     except Exception as e:
-        print(f"[RECRUTAMENTO] Erro ao extrair PDF: {e}")
+        log.error(f"Erro ao extrair PDF: {e}")
         return ""
+
+
+def _encurtar_url(url: str) -> str:
+    try:
+        resp = requests.get(f"https://tinyurl.com/api-create.php?url={url}", timeout=5)
+        resp.raise_for_status()
+        return resp.text.strip()
+    except Exception:
+        return url
 
 
 def _get_candidato(candidato_id: int) -> dict | None:
@@ -99,7 +111,7 @@ def ranking_candidatos(vaga: str) -> str:
             f"Você é um recrutador especialista em estética. Analise o currículo para a vaga de {vaga_titulo}.\n\n"
             f"Vaga: {descricao}\n\n"
             f"Currículo:\n{texto[:4000]}\n\n"
-            f'Responda em JSON: {{"nota": 0-10, "analise": "2-3 frases com pontos fortes e lacunas"}}'
+            f'Responda em JSON: {{"nota": 0-10, "analise": "2 linhas: 1 ponto forte e 1 lacuna em relação à vaga"}}'
         )
         try:
             resp    = openai.chat.completions.create(
@@ -122,9 +134,10 @@ def ranking_candidatos(vaga: str) -> str:
         c["ranking_analise"] = analise
 
     todos.sort(key=lambda x: x.get("ranking_score") or 0, reverse=True)
+    top = todos[:5]
 
-    linhas = [f"Ranking — {vaga_titulo} ({len(todos)} candidato(s))\n"]
-    for i, c in enumerate(todos, 1):
+    linhas = [f"Ranking — {vaga_titulo} (top {len(top)} de {len(todos)} candidato(s))\n"]
+    for i, c in enumerate(top, 1):
         nota_str = f"{c['ranking_score']:.1f}" if c.get("ranking_score") is not None else "—"
         linhas.append(f"{i}. [ID {c['id']}] {c['nome']} | {c.get('regiao') or '—'} | Nota: {nota_str}")
         if c.get("ranking_analise"):
@@ -138,6 +151,8 @@ def contatar_candidato(candidato_id: int) -> str:
         return f"Candidato ID {candidato_id} não encontrado."
     if not c.get("telefone"):
         return f"{c['nome']} não tem telefone cadastrado."
+    if c.get("status") == "contatado":
+        return f"{c['nome']} já foi contatado anteriormente."
 
     vaga_titulo = (c.get("vagas") or {}).get("titulo") or "nossa vaga"
     link        = LINK_COMPORTAMENTAL or "[link do formulário]"
@@ -181,7 +196,7 @@ def encaminhar_franqueado(candidato_id: int) -> str:
     if c.get("comportamental_perfil"):
         partes.append(f"\n*Perfil comportamental:*\n{c['comportamental_perfil']}")
     if c.get("cv_url"):
-        partes.append(f"\nCurrículo: {c['cv_url']}")
+        partes.append(f"\nCurrículo: {_encurtar_url(c['cv_url'])}")
 
     mensagem = "\n".join(partes)
 
@@ -228,4 +243,4 @@ def processar_comportamental(candidato_id: int, respostas: dict) -> None:
         perfil = f"Erro na análise: {e}"
 
     client.table("candidatos").update({"comportamental_perfil": perfil}).eq("id", candidato_id).execute()
-    print(f"[COMPORTAMENTAL] Análise salva para candidato {candidato_id}")
+    log.info(f"Comportamental — análise salva para candidato {candidato_id}")

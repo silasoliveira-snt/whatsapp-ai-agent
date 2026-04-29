@@ -1,9 +1,11 @@
 import os
 import uuid
+import logging
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+log = logging.getLogger(__name__)
 
 BASE_URL  = f"https://onochatapi.agiletalk.com.br/v2/api/external/{os.getenv('AGILE_CLIENT_PATH')}"
 HEADERS   = {
@@ -24,9 +26,8 @@ def _send(number: str, body: str):
         "externalKey": str(uuid.uuid4()),
         "isClosed":    False
     }
-    print(f"[API] POST {BASE_URL}")
-    print(f"[API] Payload: {payload}")
+    log.info(f"Enviando WhatsApp para {number} ({len(body)} chars)")
     response = requests.post(BASE_URL, json=payload, headers=HEADERS, timeout=10)
-    print(f"[API] Status: {response.status_code} | Response: {response.text}")
+    log.info(f"Status: {response.status_code}")
     response.raise_for_status()
     return response.json()

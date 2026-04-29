@@ -1,6 +1,9 @@
+import logging
 from datetime import date, datetime
 from services.supabase_client import client
 from services.whatsapp import _send
+
+log = logging.getLogger(__name__)
 
 
 # --- helpers privados ---
@@ -196,10 +199,10 @@ def confirmar_presenca(data: str) -> str:
                     "confirmacao_status": "sent"
                 }).eq("id", rid).execute()
             enviados.append(f"{unidade} ({len(dados['nomes'])} pessoa(s))")
-            print(f"[CONFIRMAÇÃO] Enviado para {unidade} ({telefone})")
+            log.info(f"Confirmação enviada para {unidade} ({telefone})")
         except Exception as e:
             erros.append(f"{unidade}: {e}")
-            print(f"[CONFIRMAÇÃO] Erro para {unidade}: {e}")
+            log.error(f"Erro ao confirmar {unidade}: {e}")
 
     linhas = [f"Confirmações enviadas — {data_fmt}"]
     if enviados:
@@ -290,10 +293,10 @@ def ativar_treinamento(data: str) -> str:
         try:
             _send(grupo, mensagem)
             enviados.append(r["treinamento"])
-            print(f"[ATIVAÇÃO] Enviado para grupo {grupo}: {r['treinamento']}")
+            log.info(f"Ativação enviada para grupo {grupo}: {r['treinamento']}")
         except Exception as e:
             erros.append(f"{r['treinamento']}: {e}")
-            print(f"[ATIVAÇÃO] Erro ao enviar {r['treinamento']}: {e}")
+            log.error(f"Erro ao ativar {r['treinamento']}: {e}")
 
     linhas = [f"Ativação — {_fmt_data(data)}"]
     if enviados:

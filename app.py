@@ -1,12 +1,19 @@
 import os
 import re
+import logging
 from flask import Flask, request, jsonify
-from datetime import date, datetime, timezone
+from datetime import date
 from services.supabase_client import client
 from services.whatsapp import GESTOR_NUMBER, AGENTE_AUTORIZADOS, _send
 from services.agent import process_gestor_message
 from services.tally import achar
 from services.recrutamento import processar_comportamental
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -34,17 +41,17 @@ def receive_reply():
     mensagem = (data.get("msg", {}).get("body") or "").strip()
 
     if not telefone:
-        print(f"[WHATSAPP] Payload sem telefone ignorado: {data}")
+        log.warning("Payload sem telefone ignorado")
         return jsonify({"ok": True}), 200
 
     if telefone in AGENTE_AUTORIZADOS or (GESTOR_NUMBER and telefone == GESTOR_NUMBER):
-        print(f"[GESTOR] Mensagem recebida de {telefone}: {mensagem}")
+        log.info(f"Mensagem recebida de {telefone}: {mensagem}")
         try:
             resposta = process_gestor_message(mensagem)
             _send(GESTOR_NUMBER, resposta)
-            print(f"[GESTOR] Resposta enviada: {resposta}")
+            log.info(f"Resposta enviada: {resposta}")
         except Exception as e:
-            print(f"[GESTOR] Erro ao processar: {e}")
+            log.error(f"Erro ao processar mensagem do gestor: {e}")
         return jsonify({"ok": True}), 200
 
     # SIM/NÃO → confirmação de presença em treinamentos presenciais
@@ -69,7 +76,7 @@ def receive_reply():
         "confirmacao_status": status
     }).eq("telefone_responsavel", telefone).eq("confirmacao_status", "sent").execute()
 
-    print(f"[CONFIRMAÇÃO] {telefone} respondeu {mensagem_upper} → {status} ({len(result.data)} inscrito(s))")
+    log.info(f"Confirmação: {telefone} respondeu {mensagem_upper} → {status} ({len(result.data)} inscrito(s))")
     return jsonify({"ok": True}), 200
 
 
@@ -77,7 +84,7 @@ def receive_reply():
 def receive_treinamento():
     """Recebe inscrição de treinamento via Tally ou payload flat."""
     payload = request.json
-    print(f"[TREINAMENTO] Payload recebido: {payload}")
+    log.info("Treinamento — payload recebido")
 
     if "data" in payload and "fields" in payload.get("data", {}):
         fields  = payload["data"]["fields"]
@@ -119,10 +126,10 @@ def receive_treinamento():
             )
             if cron_form.data:
                 treinamentos_selecionados = [cron_form.data[0]["treinamento"]]
-                print(f"[TREINAMENTO] Encontrado pelo formId {form_id}: {treinamentos_selecionados[0]}")
+                log.info(f"Treinamento — encontrado pelo formId {form_id}: {treinamentos_selecionados[0]}")
 
     if not nome or not treinamentos_selecionados:
-        print(f"[TREINAMENTO] Campos ausentes — nome={nome} treinamentos={treinamentos_selecionados}")
+        log.warning(f"Treinamento — campos ausentes: nome={nome} treinamentos={treinamentos_selecionados}")
         return jsonify({"error": "Campos obrigatórios ausentes: nome, treinamento"}), 400
 
     ids_salvos = []
@@ -139,10 +146,10 @@ def receive_treinamento():
         else:
             data_tr = _extrair_data_do_nome(treinamento)
             if data_tr:
-                print(f"[TREINAMENTO] Data extraída do nome: {data_tr} para '{treinamento}'")
+                log.info(f"Treinamento — data extraída do nome: {data_tr} para '{treinamento}'")
             else:
-                print(f"[TREINAMENTO] Data não encontrada para '{treinamento}'")
-        print(f"[TREINAMENTO] Data final: {data_tr} para '{treinamento}'")
+                log.warning(f"Treinamento — data não encontrada para '{treinamento}'")
+        log.info(f"Treinamento — data final: {data_tr} para '{treinamento}'")
 
         unidade_result = (
             client.table("unidades")
@@ -164,7 +171,7 @@ def receive_treinamento():
         }).execute()
 
         ids_salvos.append(record.data[0]["id"])
-        print(f"[TREINAMENTO] Salvo: {nome} | {treinamento} | {data_tr} | id {record.data[0]['id']}")
+        log.info(f"Treinamento salvo: {nome} | {treinamento} | {data_tr} | id {record.data[0]['id']}")
 
     return jsonify({"ok": True, "ids": ids_salvos}), 200
 
@@ -197,7 +204,7 @@ def _achar_checkboxes(fields: list, keyword: str) -> list[str]:
 def receive_candidatura():
     """Recebe inscrição de candidato via Tally (formulário de currículo)."""
     payload = request.json
-    print(f"[CANDIDATURA] Payload recebido")
+    log.info("Candidatura — payload recebido")
 
     fields = payload.get("data", {}).get("fields", []) if "data" in payload else []
 
@@ -218,7 +225,7 @@ def receive_candidatura():
         cv_url   = payload.get("cv_url", "").strip()
 
     if not nome or not vagas:
-        print(f"[CANDIDATURA] Campos ausentes — nome={nome} vagas={vagas}")
+        log.warning(f"Candidatura — campos ausentes: nome={nome} vagas={vagas}")
         return jsonify({"error": "Campos obrigatórios: nome, vaga"}), 400
 
     ids_salvos = []
@@ -237,7 +244,7 @@ def receive_candidatura():
         }).execute()
         candidato_id = record.data[0]["id"]
         ids_salvos.append(candidato_id)
-        print(f"[CANDIDATURA] Salvo: {nome} | vaga={vaga_str} | vaga_id={vaga_id} | id={candidato_id}")
+        log.info(f"Candidatura salva: {nome} | vaga={vaga_str} | vaga_id={vaga_id} | id={candidato_id}")
 
     return jsonify({"ok": True, "ids": ids_salvos}), 200
 
@@ -246,7 +253,7 @@ def receive_candidatura():
 def receive_comportamental():
     """Recebe respostas do formulário comportamental via Tally."""
     payload = request.json
-    print(f"[COMPORTAMENTAL] Payload recebido")
+    log.info("Comportamental — payload recebido")
 
     fields = payload.get("data", {}).get("fields", []) if "data" in payload else []
 
@@ -268,7 +275,7 @@ def receive_comportamental():
             candidato = r.data[0]
 
     if not candidato:
-        print(f"[COMPORTAMENTAL] Candidato não encontrado: telefone={telefone} email={email}")
+        log.warning(f"Comportamental — candidato não encontrado: telefone={telefone} email={email}")
         return jsonify({"error": "Candidato não encontrado"}), 404
 
     IGNORAR = {"telefone", "email", "nome"}

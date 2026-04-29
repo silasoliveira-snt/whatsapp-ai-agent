@@ -1,7 +1,10 @@
 import os
 import json
+import logging
 from datetime import date
 from openai import OpenAI
+
+log = logging.getLogger(__name__)
 from services.memoria import carregar_historico, salvar_historico
 from services.treinamentos import (
     listar_treinamentos,
@@ -272,11 +275,13 @@ def process_gestor_message(mensagem: str) -> str:
             tool_choice="required"
         )
 
-        msg  = response.choices[0].message
+        msg = response.choices[0].message
+        if not msg.tool_calls:
+            return "Não consegui processar sua solicitação."
         tc   = msg.tool_calls[0]
         args = json.loads(tc.function.arguments)
 
-        print(f"[AGENTE] Tool chamada: {tc.function.name} | args: {args}")
+        log.info(f"Tool chamada: {tc.function.name} | args: {args}")
 
         if tc.function.name == "responder":
             salvar_historico("assistant", args["mensagem"])
