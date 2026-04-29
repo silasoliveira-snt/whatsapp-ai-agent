@@ -6,6 +6,7 @@ from services.supabase_client import client
 from services.whatsapp import GESTOR_NUMBER, AGENTE_AUTORIZADOS, _send
 from services.agent import process_gestor_message
 from services.tally import achar
+from services.recrutamento import processar_comportamental
 
 app = Flask(__name__)
 
@@ -166,6 +167,105 @@ def receive_treinamento():
         print(f"[TREINAMENTO] Salvo: {nome} | {treinamento} | {data_tr} | id {record.data[0]['id']}")
 
     return jsonify({"ok": True, "ids": ids_salvos}), 200
+
+
+def _get_file_url(fields: list, keyword: str) -> str:
+    for f in fields:
+        if keyword.lower() not in f["label"].lower():
+            continue
+        valor = f.get("value")
+        if isinstance(valor, list) and valor:
+            first = valor[0]
+            return first.get("url", "") if isinstance(first, dict) else str(first)
+        return str(valor).strip() if valor else ""
+    return ""
+
+
+@app.route("/webhook/candidatura", methods=["POST"])
+def receive_candidatura():
+    """Recebe inscrição de candidato via Tally (formulário de currículo)."""
+    payload = request.json
+    print(f"[CANDIDATURA] Payload recebido")
+
+    fields = payload.get("data", {}).get("fields", []) if "data" in payload else []
+
+    if fields:
+        nome     = achar(fields, "nome",     exclude_parens=True)
+        telefone = achar(fields, "telefone", exclude_parens=True)
+        email    = achar(fields, "email",    exclude_parens=True)
+        regiao   = achar(fields, "regiao",   exclude_parens=True) or achar(fields, "região", exclude_parens=True)
+        vaga_str = achar(fields, "vaga",     exclude_parens=True)
+        cv_url   = _get_file_url(fields, "curriculo") or _get_file_url(fields, "currículo")
+    else:
+        nome     = payload.get("nome", "").strip()
+        telefone = payload.get("telefone", "").strip()
+        email    = payload.get("email", "").strip()
+        regiao   = payload.get("regiao", "").strip()
+        vaga_str = payload.get("vaga", "").strip()
+        cv_url   = payload.get("cv_url", "").strip()
+
+    if not nome or not vaga_str:
+        print(f"[CANDIDATURA] Campos ausentes — nome={nome} vaga={vaga_str}")
+        return jsonify({"error": "Campos obrigatórios: nome, vaga"}), 400
+
+    vaga_r  = client.table("vagas").select("id").ilike("titulo", f"%{vaga_str}%").limit(1).execute()
+    vaga_id = vaga_r.data[0]["id"] if vaga_r.data else None
+
+    record       = client.table("candidatos").insert({
+        "nome":     nome,
+        "telefone": telefone or None,
+        "email":    email or None,
+        "regiao":   regiao or None,
+        "vaga_id":  vaga_id,
+        "cv_url":   cv_url or None,
+    }).execute()
+    candidato_id = record.data[0]["id"]
+    print(f"[CANDIDATURA] Salvo: {nome} | vaga_id={vaga_id} | id={candidato_id}")
+    return jsonify({"ok": True, "id": candidato_id}), 200
+
+
+@app.route("/webhook/comportamental", methods=["POST"])
+def receive_comportamental():
+    """Recebe respostas do formulário comportamental via Tally."""
+    payload = request.json
+    print(f"[COMPORTAMENTAL] Payload recebido")
+
+    fields = payload.get("data", {}).get("fields", []) if "data" in payload else []
+
+    if fields:
+        telefone = achar(fields, "telefone", exclude_parens=True)
+        email    = achar(fields, "email",    exclude_parens=True)
+    else:
+        telefone = payload.get("telefone", "").strip()
+        email    = payload.get("email", "").strip()
+
+    candidato = None
+    if telefone:
+        r = client.table("candidatos").select("id").eq("telefone", telefone).order("created_at", desc=True).limit(1).execute()
+        if r.data:
+            candidato = r.data[0]
+    if not candidato and email:
+        r = client.table("candidatos").select("id").eq("email", email).order("created_at", desc=True).limit(1).execute()
+        if r.data:
+            candidato = r.data[0]
+
+    if not candidato:
+        print(f"[COMPORTAMENTAL] Candidato não encontrado: telefone={telefone} email={email}")
+        return jsonify({"error": "Candidato não encontrado"}), 404
+
+    IGNORAR = {"telefone", "email", "nome"}
+    respostas = {}
+    if fields:
+        for f in fields:
+            label = f["label"].strip()
+            valor = f.get("value")
+            if valor and not any(k in label.lower() for k in IGNORAR):
+                respostas[label] = str(valor).strip()
+    else:
+        respostas = {k: v for k, v in payload.items() if k not in IGNORAR and v}
+
+    processar_comportamental(candidato["id"], respostas)
+    return jsonify({"ok": True}), 200
 
 
 @app.route("/health", methods=["GET"])

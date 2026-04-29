@@ -1,0 +1,231 @@
+import io
+import json
+import os
+
+import pdfplumber
+import requests
+from openai import OpenAI
+
+from services.supabase_client import client
+from services.whatsapp import _send
+
+GRUPO_FRANQUEADOS   = os.getenv("GRUPO_FRANQUEADOS")
+LINK_COMPORTAMENTAL = os.getenv("LINK_COMPORTAMENTAL")
+
+
+# --- helpers privados ---
+
+def _get_openai() -> OpenAI:
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError("OPENAI_API_KEY não configurada.")
+    return OpenAI(api_key=key)
+
+
+def _extrair_texto_pdf(url: str) -> str:
+    try:
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
+            return "\n".join(p.extract_text() or "" for p in pdf.pages).strip()
+    except Exception as e:
+        print(f"[RECRUTAMENTO] Erro ao extrair PDF: {e}")
+        return ""
+
+
+def _get_candidato(candidato_id: int) -> dict | None:
+    r = (
+        client.table("candidatos")
+        .select("*, vagas(titulo)")
+        .eq("id", candidato_id)
+        .limit(1)
+        .execute()
+    )
+    return r.data[0] if r.data else None
+
+
+# --- tools do agente ---
+
+def ranking_candidatos(vaga: str) -> str:
+    vaga_r = (
+        client.table("vagas")
+        .select("id, titulo, descricao, requisitos")
+        .ilike("titulo", f"%{vaga}%")
+        .limit(1)
+        .execute()
+    )
+    if not vaga_r.data:
+        return f"Vaga '{vaga}' não encontrada. Disponíveis: Consultora, Recepção, Gerente, Esteticista."
+
+    vaga_data   = vaga_r.data[0]
+    vaga_id     = vaga_data["id"]
+    vaga_titulo = vaga_data["titulo"]
+    descricao   = f"{vaga_data['descricao']} Requisitos: {vaga_data['requisitos']}"
+
+    todos = (
+        client.table("candidatos")
+        .select("id, nome, regiao, cv_url, cv_texto, ranking_score, ranking_analise, status")
+        .eq("vaga_id", vaga_id)
+        .order("created_at")
+        .execute()
+    ).data or []
+
+    if not todos:
+        return f"Nenhum candidato inscrito para a vaga {vaga_titulo}."
+
+    openai = _get_openai()
+
+    for c in todos:
+        if c.get("ranking_score") is not None:
+            continue
+
+        texto = c.get("cv_texto") or ""
+        if not texto and c.get("cv_url"):
+            texto = _extrair_texto_pdf(c["cv_url"])
+            if texto:
+                client.table("candidatos").update({"cv_texto": texto}).eq("id", c["id"]).execute()
+
+        if not texto:
+            client.table("candidatos").update({
+                "ranking_score":   0,
+                "ranking_analise": "Currículo não disponível para análise.",
+                "status":          "analisado",
+            }).eq("id", c["id"]).execute()
+            c["ranking_score"]   = 0
+            c["ranking_analise"] = "Currículo não disponível para análise."
+            continue
+
+        prompt = (
+            f"Você é um recrutador especialista em estética. Analise o currículo para a vaga de {vaga_titulo}.\n\n"
+            f"Vaga: {descricao}\n\n"
+            f"Currículo:\n{texto[:4000]}\n\n"
+            f'Responda em JSON: {{"nota": 0-10, "analise": "2-3 frases com pontos fortes e lacunas"}}'
+        )
+        try:
+            resp    = openai.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            data    = json.loads(resp.choices[0].message.content)
+            nota    = float(data.get("nota", 0))
+            analise = str(data.get("analise", ""))
+        except Exception as e:
+            nota, analise = 0.0, f"Erro na análise: {e}"
+
+        client.table("candidatos").update({
+            "ranking_score":   nota,
+            "ranking_analise": analise,
+            "status":          "analisado",
+        }).eq("id", c["id"]).execute()
+        c["ranking_score"]   = nota
+        c["ranking_analise"] = analise
+
+    todos.sort(key=lambda x: x.get("ranking_score") or 0, reverse=True)
+
+    linhas = [f"Ranking — {vaga_titulo} ({len(todos)} candidato(s))\n"]
+    for i, c in enumerate(todos, 1):
+        nota_str = f"{c['ranking_score']:.1f}" if c.get("ranking_score") is not None else "—"
+        linhas.append(f"{i}. [ID {c['id']}] {c['nome']} | {c.get('regiao') or '—'} | Nota: {nota_str}")
+        if c.get("ranking_analise"):
+            linhas.append(f"   {c['ranking_analise']}")
+    return "\n".join(linhas)
+
+
+def contatar_candidato(candidato_id: int) -> str:
+    c = _get_candidato(candidato_id)
+    if not c:
+        return f"Candidato ID {candidato_id} não encontrado."
+    if not c.get("telefone"):
+        return f"{c['nome']} não tem telefone cadastrado."
+
+    vaga_titulo = (c.get("vagas") or {}).get("titulo") or "nossa vaga"
+    link        = LINK_COMPORTAMENTAL or "[link do formulário]"
+
+    mensagem = (
+        f"Olá, {c['nome'].split()[0]}!\n\n"
+        f"Seu currículo para a vaga de *{vaga_titulo}* foi avaliado com sucesso!\n"
+        f"Você foi selecionado(a) para a próxima etapa do processo seletivo.\n\n"
+        f"Para continuar, preencha o formulário abaixo — leva menos de 5 minutos:\n{link}\n\n"
+        f"Qualquer dúvida, é só chamar aqui."
+    )
+
+    try:
+        _send(c["telefone"], mensagem)
+        client.table("candidatos").update({"status": "contatado"}).eq("id", candidato_id).execute()
+        return f"Mensagem enviada para {c['nome']} ({c['telefone']}). Status: contatado."
+    except Exception as e:
+        return f"Erro ao contatar {c['nome']}: {e}"
+
+
+def encaminhar_franqueado(candidato_id: int) -> str:
+    c = _get_candidato(candidato_id)
+    if not c:
+        return f"Candidato ID {candidato_id} não encontrado."
+    if not GRUPO_FRANQUEADOS:
+        return "GRUPO_FRANQUEADOS não configurado no .env."
+
+    vaga_titulo = (c.get("vagas") or {}).get("titulo") or "—"
+    nota        = c.get("ranking_score")
+    nota_str    = f"{nota:.1f}/10" if nota is not None else "—"
+
+    partes = [
+        "*Candidato para avaliação*\n",
+        f"Nome: {c['nome']}",
+        f"Vaga: {vaga_titulo}",
+        f"Região: {c.get('regiao') or '—'}",
+        f"\n*Compatibilidade: {nota_str}*",
+    ]
+    if c.get("ranking_analise"):
+        partes.append(c["ranking_analise"])
+    if c.get("comportamental_perfil"):
+        partes.append(f"\n*Perfil comportamental:*\n{c['comportamental_perfil']}")
+    if c.get("cv_url"):
+        partes.append(f"\nCurrículo: {c['cv_url']}")
+
+    mensagem = "\n".join(partes)
+
+    try:
+        _send(GRUPO_FRANQUEADOS, mensagem)
+        client.table("candidatos").update({"status": "encaminhado"}).eq("id", candidato_id).execute()
+        return f"{c['nome']} encaminhado para o grupo dos franqueados."
+    except Exception as e:
+        return f"Erro ao encaminhar {c['nome']}: {e}"
+
+
+# --- chamado pelo webhook, não pelo agente ---
+
+def processar_comportamental(candidato_id: int, respostas: dict) -> None:
+    client.table("candidatos").update({
+        "comportamental_respostas": respostas,
+        "status":                   "comportamental_recebido",
+    }).eq("id", candidato_id).execute()
+
+    vaga_r      = client.table("candidatos").select("vagas(titulo)").eq("id", candidato_id).limit(1).execute()
+    vaga_titulo = ((vaga_r.data[0].get("vagas") or {}).get("titulo") or "") if vaga_r.data else ""
+
+    respostas_txt = "\n".join(f"P: {q}\nR: {r}" for q, r in respostas.items())
+
+    prompt = (
+        f"Você é especialista em psicologia organizacional. Analise as respostas comportamentais do candidato à vaga de {vaga_titulo}.\n\n"
+        f"{respostas_txt}\n\n"
+        f"Produza uma análise com:\n"
+        f"1. Perfil dominante (ex: Executor, Comunicador, Analista, Planejador)\n"
+        f"2. Pontos fortes no contexto profissional (2-3 pontos)\n"
+        f"3. Pontos de atenção (1-2 pontos)\n"
+        f"4. Fit para a vaga de {vaga_titulo} (alto/médio/baixo + justificativa)\n\n"
+        f"Máximo 200 palavras. Seja direto e específico."
+    )
+
+    try:
+        openai = _get_openai()
+        resp   = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        perfil = resp.choices[0].message.content.strip()
+    except Exception as e:
+        perfil = f"Erro na análise: {e}"
+
+    client.table("candidatos").update({"comportamental_perfil": perfil}).eq("id", candidato_id).execute()
+    print(f"[COMPORTAMENTAL] Análise salva para candidato {candidato_id}")

@@ -13,6 +13,11 @@ from services.treinamentos import (
     preview_ativacao,
     ativar_treinamento,
 )
+from services.recrutamento import (
+    ranking_candidatos,
+    contatar_candidato,
+    encaminhar_franqueado,
+)
 
 
 def _get_openai_client():
@@ -22,7 +27,7 @@ def _get_openai_client():
     return OpenAI(api_key=api_key)
 
 
-SYSTEM_PROMPT = """Você é um assistente de gestão da Onodera Estética, especialista em controle de treinamentos.
+SYSTEM_PROMPT = """Você é um assistente de gestão da Onodera Estética, especialista em treinamentos e recrutamento.
 Responda sempre em português, de forma direta e concisa, sem formatação markdown.
 Hoje é {today}.
 
@@ -35,7 +40,12 @@ Fluxo obrigatório para confirmação de presença:
 
 Fluxo obrigatório para ativação de treinamento:
 1. Quando o gestor pedir para ativar ou divulgar um treinamento → use PRIMEIRO preview_ativacao_treinamento para mostrar a mensagem que será enviada ao grupo.
-2. Somente quando o gestor disser "pode enviar", "confirma", "sim" ou similar após o preview → use ativar_treinamento para disparar."""
+2. Somente quando o gestor disser "pode enviar", "confirma", "sim" ou similar após o preview → use ativar_treinamento para disparar.
+
+Fluxo obrigatório para recrutamento:
+1. Quando o gestor pedir ranking ou análise de candidatos para uma vaga → use ranking_candidatos.
+2. Quando o gestor validar o ranking e pedir para contatar um candidato → use contatar_candidato com o ID informado.
+3. Quando o gestor autorizar o encaminhamento de um candidato para os franqueados → use encaminhar_franqueado com o ID informado."""
 
 TOOLS = [
     {
@@ -158,6 +168,48 @@ TOOLS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "ranking_candidatos",
+            "description": "Analisa os currículos dos candidatos inscritos para uma vaga e retorna um ranking com nota e justificativa para cada um.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "vaga": {"type": "string", "description": "Nome da vaga: Consultora, Recepção, Gerente ou Esteticista"}
+                },
+                "required": ["vaga"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "contatar_candidato",
+            "description": "Envia WhatsApp para o candidato informando que foi aprovado para a próxima etapa e inclui o link do formulário comportamental. Usar após o gestor validar o ranking.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "candidato_id": {"type": "integer", "description": "ID do candidato retornado pelo ranking"}
+                },
+                "required": ["candidato_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "encaminhar_franqueado",
+            "description": "Envia para o grupo dos franqueados o perfil completo do candidato: nota de compatibilidade, análise do currículo, perfil comportamental e link do PDF. Usar somente após autorização do gestor.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "candidato_id": {"type": "integer", "description": "ID do candidato a encaminhar"}
+                },
+                "required": ["candidato_id"]
+            }
+        }
+    },
 ]
 
 # Tools cujo resultado vai direto ao gestor sem passar pelo LLM de novo
@@ -170,6 +222,9 @@ _DISPLAY_TOOLS = {
     "preview_ativacao_treinamento",
     "ativar_treinamento",
     "relatorio_confirmacoes_treinamento",
+    "ranking_candidatos",
+    "contatar_candidato",
+    "encaminhar_franqueado",
 }
 
 # Mapeamento tool_name → handler; adicionar uma tool nova = uma linha aqui
@@ -182,6 +237,9 @@ _TOOL_HANDLERS = {
     "preview_ativacao_treinamento":       lambda a: preview_ativacao(a["data"]),
     "ativar_treinamento":                 lambda a: ativar_treinamento(a["data"]),
     "relatorio_confirmacoes_treinamento": lambda a: relatorio_confirmacoes(a["data"]),
+    "ranking_candidatos":                 lambda a: ranking_candidatos(a["vaga"]),
+    "contatar_candidato":                 lambda a: contatar_candidato(int(a["candidato_id"])),
+    "encaminhar_franqueado":              lambda a: encaminhar_franqueado(int(a["candidato_id"])),
 }
 
 
