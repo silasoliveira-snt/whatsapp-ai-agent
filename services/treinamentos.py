@@ -1,3 +1,4 @@
+import os
 import logging
 from datetime import date, datetime
 from services.supabase_client import client
@@ -5,6 +6,9 @@ from services.whatsapp import _send
 from services.constants import CONFIRM_SENT, CONFIRM_CONFIRMED, CONFIRM_DECLINED
 
 log = logging.getLogger(__name__)
+
+GRUPOS_ATIVACAO = [g.strip() for g in os.getenv("GRUPOS_ATIVACAO", "").split(",") if g.strip()]
+MENSAGEM_ATIVACAO = os.getenv("MENSAGEM_ATIVACAO", "")
 
 
 # --- helpers privados ---
@@ -31,12 +35,12 @@ def _montar_mensagem_ativacao(r: dict) -> str:
     nome_tr  = r["treinamento"]
     data_fmt = _fmt_data(r.get("data") or "")
     link     = r.get("link_inscricao") or ""
-    mensagem = r.get("mensagem_customizada") or (
+    template = r.get("mensagem_customizada") or MENSAGEM_ATIVACAO or (
         f"Boa tarde, rede Onodera!\n"
         f"Passando para reforçar a participação no *{nome_tr}*!\n"
         f"Contamos com a presença de vocês!"
     )
-    mensagem = mensagem.replace("{treinamento}", nome_tr).replace("{data}", data_fmt)
+    mensagem = template.replace("{treinamento}", nome_tr).replace("{data}", data_fmt)
     if link:
         mensagem += f"\n\nInscrições: {link}"
     return mensagem
@@ -263,9 +267,12 @@ def relatorio_confirmacoes(data: str) -> str:
 
 
 def preview_ativacao(data: str) -> str:
+    if not GRUPOS_ATIVACAO:
+        return "GRUPOS_ATIVACAO não configurado no Railway."
+
     cron = (
         client.table("cronograma")
-        .select("data, treinamento, link_inscricao, numero_grupo, mensagem_customizada")
+        .select("data, treinamento, link_inscricao, mensagem_customizada")
         .eq("data", data)
         .neq("tipo", "online")
         .execute()
@@ -273,24 +280,23 @@ def preview_ativacao(data: str) -> str:
     if not cron.data:
         return f"Nenhum treinamento presencial em {data}."
 
-    registros = [r for r in cron.data if r.get("numero_grupo")]
-    if not registros:
-        return f"Nenhum treinamento com grupo configurado para {data}. Preencha numero_grupo no cronograma."
-
     linhas = [f"Preview — ativação de {_fmt_data(data)}\n"]
-    for r in registros:
+    for r in cron.data:
         mensagem = _montar_mensagem_ativacao(r)
         linhas.append(f"• {r['treinamento']}")
-        linhas.append(f"  Grupo: {r['numero_grupo']}")
+        linhas.append(f"  Grupos: {len(GRUPOS_ATIVACAO)} grupo(s)")
         linhas.append(f"  Mensagem:\n{mensagem}\n")
     linhas.append("Para enviar, responda: pode enviar")
     return "\n".join(linhas)
 
 
 def ativar_treinamento(data: str) -> str:
+    if not GRUPOS_ATIVACAO:
+        return "GRUPOS_ATIVACAO não configurado no Railway."
+
     cron = (
         client.table("cronograma")
-        .select("data, treinamento, link_inscricao, numero_grupo, mensagem_customizada")
+        .select("data, treinamento, link_inscricao, mensagem_customizada")
         .eq("data", data)
         .neq("tipo", "online")
         .execute()
@@ -298,25 +304,21 @@ def ativar_treinamento(data: str) -> str:
     if not cron.data:
         return f"Nenhum treinamento presencial em {data}."
 
-    registros = [r for r in cron.data if r.get("numero_grupo")]
-    if not registros:
-        return f"Nenhum treinamento com grupo configurado para {data}. Preencha numero_grupo no cronograma."
-
     enviados, erros = [], []
-    for r in registros:
-        grupo    = r["numero_grupo"]
+    for r in cron.data:
         mensagem = _montar_mensagem_ativacao(r)
-        try:
-            _send(grupo, mensagem)
-            enviados.append(r["treinamento"])
-            log.info(f"Ativação enviada para grupo {grupo}: {r['treinamento']}")
-        except Exception as e:
-            erros.append(f"{r['treinamento']}: {e}")
-            log.error(f"Erro ao ativar {r['treinamento']}: {e}")
+        for grupo in GRUPOS_ATIVACAO:
+            try:
+                _send(grupo, mensagem)
+                log.info(f"Ativação enviada para grupo {grupo}: {r['treinamento']}")
+            except Exception as e:
+                erros.append(f"{r['treinamento']} → {grupo}: {e}")
+                log.error(f"Erro ao ativar {r['treinamento']} para {grupo}: {e}")
+        enviados.append(r["treinamento"])
 
     linhas = [f"Ativação — {_fmt_data(data)}"]
     if enviados:
-        linhas.append(f"\n{len(enviados)} treinamento(s) ativado(s):")
+        linhas.append(f"\n{len(enviados)} treinamento(s) ativado(s) em {len(GRUPOS_ATIVACAO)} grupo(s):")
         linhas += [f"  ✓ {t}" for t in enviados]
     if erros:
         linhas.append(f"\nErros:")
