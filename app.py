@@ -104,7 +104,11 @@ def receive_treinamento():
 
             if tipo == "CHECKBOXES" and isinstance(valor, list) and "(" not in f["label"]:
                 if any(label_lower == t or label_lower.startswith(t) for t in TRAINING_LABELS):
-                    selected = [o["text"] for o in f.get("options", []) if o["id"] in valor]
+                    selected = [
+                        o["text"].strip()
+                        for o in f.get("options", [])
+                        if o["id"] in valor and o.get("text", "").strip()
+                    ]
                     treinamentos_selecionados.extend(selected)
 
             elif tipo == "HIDDEN_FIELDS" and f["label"].strip():
