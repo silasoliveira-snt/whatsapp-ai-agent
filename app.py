@@ -23,11 +23,35 @@ TRAINING_LABELS = ("online", "prescencial", "presencial")
 
 
 def _extrair_data_do_nome(nome: str) -> str | None:
-    """Extrai data do nome do treinamento no formato 'DD.MM - ...' → 'YYYY-MM-DD'."""
-    match = re.match(r'^(\d{2})\.(\d{2})', nome.strip())
-    if match:
-        dia, mes = match.groups()
-        return f"{date.today().year}-{mes}-{dia}"
+    """Extrai a data do início do nome do treinamento → 'YYYY-MM-DD'.
+
+    Aceita ISO 'YYYY-MM-DD', 'DD/MM/YYYY', e 'DD.MM' / 'DD/MM' (ano corrente).
+    Retorna None se não houver data reconhecível ou se dia/mês forem inválidos
+    (nesse caso a inscrição é ignorada, não gera erro).
+    """
+    nome = nome.strip()
+
+    def _iso(ano: int, mes: int, dia: int) -> str | None:
+        return f"{ano}-{mes:02d}-{dia:02d}" if 1 <= mes <= 12 and 1 <= dia <= 31 else None
+
+    # ISO: 'YYYY-MM-DD - ...'
+    m = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})', nome)
+    if m:
+        ano, mes, dia = map(int, m.groups())
+        return _iso(ano, mes, dia)
+
+    # 'DD/MM/YYYY | ...'
+    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})', nome)
+    if m:
+        dia, mes, ano = (int(g) for g in m.groups())
+        return _iso(ano, mes, dia)
+
+    # 'DD.MM' ou 'DD/MM' (sem ano) → ano corrente
+    m = re.match(r'^(\d{1,2})[./](\d{1,2})(?!\d)', nome)
+    if m:
+        dia, mes = int(m.group(1)), int(m.group(2))
+        return _iso(date.today().year, mes, dia)
+
     return None
 
 
@@ -85,118 +109,140 @@ def receive_reply():
 
 @app.route("/webhook/treinamento", methods=["POST"])
 def receive_treinamento():
-    """Recebe inscrição de treinamento via Tally ou payload flat."""
-    payload = request.json
-    log.info("Treinamento — payload recebido")
+    """Recebe inscrição de treinamento via Tally ou payload flat.
 
-    if "data" in payload and "fields" in payload.get("data", {}):
-        fields  = payload["data"]["fields"]
-        nome    = achar(fields, "nome",    exclude_parens=True)
-        unidade = achar(fields, "unidade", exclude_parens=True)
-        email   = achar(fields, "email",   exclude_parens=True)
-        crm     = achar(fields, "crm",     exclude_parens=True)
+    Resiliente: resolve data em múltiplos formatos (parser), ignora opções sem data,
+    isola falha por inscrição, e só devolve 500 em falha sistêmica real — assim um
+    payload ruim não faz o Tally desabilitar o webhook.
+    """
+    try:
+        payload = request.json or {}
+        log.info("Treinamento — payload recebido")
 
-        treinamentos_selecionados = []
-        for f in fields:
-            label_lower = f["label"].lower().strip()
-            tipo  = f.get("type", "")
-            valor = f.get("value")
+        if "data" in payload and "fields" in payload.get("data", {}):
+            fields  = payload["data"]["fields"]
+            nome    = achar(fields, "nome",    exclude_parens=True)
+            unidade = achar(fields, "unidade", exclude_parens=True)
+            email   = achar(fields, "email",   exclude_parens=True)
+            crm     = achar(fields, "crm",     exclude_parens=True)
 
-            if tipo == "CHECKBOXES" and isinstance(valor, list) and "(" not in f["label"]:
-                if any(label_lower == t or label_lower.startswith(t) for t in TRAINING_LABELS):
-                    selected = [
-                        o["text"].strip()
-                        for o in f.get("options", [])
-                        if o["id"] in valor and o.get("text", "").strip()
-                    ]
-                    treinamentos_selecionados.extend(selected)
+            treinamentos_selecionados = []
+            for f in fields:
+                label_lower = f["label"].lower().strip()
+                tipo  = f.get("type", "")
+                valor = f.get("value")
 
-            elif tipo == "HIDDEN_FIELDS" and f["label"].strip():
-                treinamentos_selecionados.append(f["label"].strip())
-    else:
-        nome    = payload.get("nome", "").strip()
-        email   = payload.get("email", "").strip()
-        crm     = payload.get("crm", "").strip()
-        unidade = payload.get("unidade", "").strip()
-        tr      = payload.get("treinamento", "").strip()
-        treinamentos_selecionados = [tr] if tr else []
+                if tipo == "CHECKBOXES" and isinstance(valor, list) and "(" not in f["label"]:
+                    if any(label_lower == t or label_lower.startswith(t) for t in TRAINING_LABELS):
+                        selected = [
+                            o["text"].strip()
+                            for o in f.get("options", [])
+                            if o["id"] in valor and o.get("text", "").strip()
+                        ]
+                        treinamentos_selecionados.extend(selected)
 
-    if not treinamentos_selecionados:
-        form_id = payload.get("data", {}).get("formId", "")
-        if form_id:
-            cron_form = (
-                client.table("cronograma")
-                .select("treinamento")
-                .eq("tally_form_id", form_id)
+                elif tipo == "HIDDEN_FIELDS" and f["label"].strip():
+                    treinamentos_selecionados.append(f["label"].strip())
+        else:
+            nome    = payload.get("nome", "").strip()
+            email   = payload.get("email", "").strip()
+            crm     = payload.get("crm", "").strip()
+            unidade = payload.get("unidade", "").strip()
+            tr      = payload.get("treinamento", "").strip()
+            treinamentos_selecionados = [tr] if tr else []
+
+        if not treinamentos_selecionados:
+            form_id = payload.get("data", {}).get("formId", "")
+            if form_id:
+                cron_form = (
+                    client.table("cronograma")
+                    .select("treinamento")
+                    .eq("tally_form_id", form_id)
+                    .limit(1)
+                    .execute()
+                )
+                if cron_form.data:
+                    treinamentos_selecionados = [cron_form.data[0]["treinamento"]]
+                    log.info(f"Treinamento — encontrado pelo formId {form_id}: {treinamentos_selecionados[0]}")
+
+        if not nome or not treinamentos_selecionados:
+            log.warning(f"Treinamento — campos ausentes: nome={nome} treinamentos={treinamentos_selecionados}")
+            return jsonify({"error": "Campos obrigatórios ausentes: nome, treinamento"}), 400
+
+        # Telefone do responsável da unidade (não-crítico: falha aqui não derruba a inscrição).
+        try:
+            unidade_result = (
+                client.table("unidades")
+                .select("telefone_responsavel")
+                .eq("nome", unidade)
                 .limit(1)
                 .execute()
             )
-            if cron_form.data:
-                treinamentos_selecionados = [cron_form.data[0]["treinamento"]]
-                log.info(f"Treinamento — encontrado pelo formId {form_id}: {treinamentos_selecionados[0]}")
+            telefone_responsavel = unidade_result.data[0]["telefone_responsavel"] if unidade_result.data else None
+        except Exception as e:
+            log.error(f"Treinamento — falha ao buscar telefone da unidade '{unidade}': {e}")
+            telefone_responsavel = None
 
-    if not nome or not treinamentos_selecionados:
-        log.warning(f"Treinamento — campos ausentes: nome={nome} treinamentos={treinamentos_selecionados}")
-        return jsonify({"error": "Campos obrigatórios ausentes: nome, treinamento"}), 400
+        ids_salvos, ignorados, erros = [], [], []
+        for treinamento in treinamentos_selecionados:
+            try:
+                # Trap 3: a data vem do parser (o match exato com cronograma nunca casava).
+                data_tr = _extrair_data_do_nome(treinamento)
 
-    unidade_result = (
-        client.table("unidades")
-        .select("telefone_responsavel")
-        .eq("nome", unidade)
-        .limit(1)
-        .execute()
-    )
-    telefone_responsavel = unidade_result.data[0]["telefone_responsavel"] if unidade_result.data else None
+                # Trap 2: sem data → ignora (não deixa None chegar na query/insert).
+                if not data_tr:
+                    log.warning(f"Treinamento — sem data, inscrição ignorada: '{nome}' | '{treinamento}'")
+                    ignorados.append(treinamento)
+                    continue
 
-    ids_salvos = []
-    for treinamento in treinamentos_selecionados:
-        cron = (
-            client.table("cronograma")
-            .select("data")
-            .eq("treinamento", treinamento)
-            .limit(1)
-            .execute()
-        )
-        if cron.data:
-            data_tr = cron.data[0]["data"]
-        else:
-            data_tr = _extrair_data_do_nome(treinamento)
-            if data_tr:
-                log.info(f"Treinamento — data extraída do nome: {data_tr} para '{treinamento}'")
-            else:
-                log.warning(f"Treinamento — data não encontrada para '{treinamento}'")
-        log.info(f"Treinamento — data final: {data_tr} para '{treinamento}'")
+                # Dedupe: ignora se já existe inscrição igual
+                existing = (
+                    client.table("treinamentos")
+                    .select("id")
+                    .eq("nome", nome)
+                    .eq("treinamento", treinamento)
+                    .eq("data_treinamento", data_tr)
+                    .eq("arquivado", False)
+                    .limit(1)
+                    .execute()
+                )
+                if existing.data:
+                    log.info(f"Inscrição duplicada ignorada: {nome} | {treinamento} | {data_tr}")
+                    ids_salvos.append(existing.data[0]["id"])
+                    continue
 
-        # Dedupe: ignora se já existe inscrição igual
-        existing = (
-            client.table("treinamentos")
-            .select("id")
-            .eq("nome", nome)
-            .eq("treinamento", treinamento)
-            .eq("data_treinamento", data_tr)
-            .eq("arquivado", False)
-            .limit(1)
-            .execute()
-        )
-        if existing.data:
-            log.info(f"Inscrição duplicada ignorada: {nome} | {treinamento} | {data_tr}")
-            ids_salvos.append(existing.data[0]["id"])
-            continue
+                record = client.table("treinamentos").insert({
+                    "nome":                 nome,
+                    "email":                email or None,
+                    "crm":                  crm or None,
+                    "treinamento":          treinamento,
+                    "data_treinamento":     data_tr,
+                    "unidade":              unidade,
+                    "telefone_responsavel": telefone_responsavel,
+                }).execute()
+                ids_salvos.append(record.data[0]["id"])
+                log.info(f"Treinamento salvo: {nome} | {treinamento} | {data_tr} | id {record.data[0]['id']}")
 
-        record = client.table("treinamentos").insert({
-            "nome":                 nome,
-            "email":                email or None,
-            "crm":                  crm or None,
-            "treinamento":          treinamento,
-            "data_treinamento":     data_tr,
-            "unidade":              unidade,
-            "telefone_responsavel": telefone_responsavel,
-        }).execute()
+            # Trap 4: falha numa inscrição não derruba as outras da mesma submissão.
+            except Exception as e:
+                log.error(f"Treinamento — erro ao salvar '{treinamento}' de '{nome}': {e}")
+                erros.append(f"{treinamento}: {e}")
 
-        ids_salvos.append(record.data[0]["id"])
-        log.info(f"Treinamento salvo: {nome} | {treinamento} | {data_tr} | id {record.data[0]['id']}")
+        # Trap 5: só 500 se NADA salvou E houve exceção real (falha sistêmica → Tally re-tenta).
+        if erros and not ids_salvos:
+            return jsonify({"error": "falha ao salvar inscrições", "detalhes": erros}), 500
 
-    return jsonify({"ok": True, "ids": ids_salvos}), 200
+        return jsonify({
+            "ok": True,
+            "ids": ids_salvos,
+            "ignorados": ignorados or None,
+            "erros": erros or None,
+        }), 200
+
+    # Trap 5: erro inesperado vira resposta controlada + log (nunca stack-trace cru).
+    except Exception as e:
+        log.exception(f"Treinamento — erro inesperado: {e}")
+        return jsonify({"error": "erro interno"}), 500
 
 
 def _get_file_url(fields: list, keyword: str) -> str:
