@@ -1,14 +1,13 @@
 import os
 import re
 import logging
-import threading
 from flask import Flask, request, jsonify
 from datetime import date
 from services.supabase_client import client
 from services.whatsapp import GESTOR_NUMBER, AGENTE_AUTORIZADOS, _send
 from services.agent import process_gestor_message
 from services.tally import achar, achar_checkboxes
-from services.recrutamento import processar_comportamental, analisar_lote_vaga
+from services.recrutamento import processar_comportamental
 from services.constants import CONFIRM_SENT, CONFIRM_CONFIRMED, CONFIRM_DECLINED
 
 logging.basicConfig(
@@ -245,6 +244,20 @@ def receive_treinamento():
         return jsonify({"error": "erro interno"}), 500
 
 
+def _coletar_regioes(fields: list) -> list[str]:
+    """No form Trabalhe Conosco a região está espalhada em vários grupos de checkbox
+    (um por estado/cidade). Junta as opções marcadas de todos os grupos, menos o de
+    vaga ('Áreas de interesse'). Ignora os campos expandidos (valor booleano/None)."""
+    regioes = []
+    for f in fields:
+        if f.get("type") != "CHECKBOXES" or not isinstance(f.get("value"), list):
+            continue
+        if "interesse" in f["label"].lower():
+            continue
+        regioes += [o["text"].strip() for o in f.get("options", []) if o["id"] in f["value"]]
+    return regioes
+
+
 def _get_file_url(fields: list, keyword: str) -> str:
     for f in fields:
         if keyword.lower() not in f["label"].lower():
@@ -269,10 +282,13 @@ def receive_candidatura():
     if fields:
         nome     = achar(fields, "nome",     exclude_parens=True)
         telefone = achar(fields, "telefone", exclude_parens=True)
-        email    = achar(fields, "email",    exclude_parens=True)
-        regioes  = achar_checkboxes(fields, "região") or achar_checkboxes(fields, "regiao")
-        regiao   = ", ".join(regioes) if regioes else achar(fields, "região", exclude_parens=True)
-        vagas    = achar_checkboxes(fields, "vaga")
+        # 'E-mail' (com hífen) não casa com a keyword 'email'; tenta as duas grafias.
+        email    = achar(fields, "e-mail", exclude_parens=True) or achar(fields, "email", exclude_parens=True)
+        # Vaga = "Áreas de interesse" (checkbox). Região = tudo que foi marcado nos
+        # grupos de localidade (Trabalhe Conosco espalha em vários grupos por estado).
+        vagas    = achar_checkboxes(fields, "interesse") or achar_checkboxes(fields, "vaga")
+        regioes  = _coletar_regioes(fields)
+        regiao   = ", ".join(regioes) if regioes else None
         cv_url   = _get_file_url(fields, "curriculo") or _get_file_url(fields, "currículo")
     else:
         nome     = payload.get("nome", "").strip()
@@ -303,19 +319,6 @@ def receive_candidatura():
         candidato_id = record.data[0]["id"]
         ids_salvos.append(candidato_id)
         log.info(f"Candidatura salva: {nome} | vaga={vaga_str} | vaga_id={vaga_id} | id={candidato_id}")
-
-        if vaga_id:
-            pendentes = (
-                client.table("candidatos")
-                .select("id")
-                .eq("vaga_id", vaga_id)
-                .is_("ranking_score", "null")
-                .eq("arquivado", False)
-                .execute()
-            )
-            if len(pendentes.data) >= 10:
-                log.info(f"Batch analysis disparado: {len(pendentes.data)} candidatos sem score para vaga_id={vaga_id}")
-                threading.Thread(target=analisar_lote_vaga, args=(vaga_id,), daemon=True).start()
 
     return jsonify({"ok": True, "ids": ids_salvos}), 200
 

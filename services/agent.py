@@ -50,8 +50,8 @@ Fluxo obrigatório para ativação de treinamento:
 2. Somente quando o gestor disser "pode enviar", "confirma", "sim" ou similar após o preview → use ativar_treinamento para disparar.
 
 Fluxo obrigatório para recrutamento:
-1. Quando o gestor pedir ranking ou análise de candidatos para uma vaga → use ranking_candidatos.
-2. Quando o gestor validar o ranking e pedir para contatar um candidato → use contatar_candidato com o ID informado.
+1. Quando o gestor pedir os candidatos ou currículos de uma vaga → use ranking_candidatos (retorna nome, região, breve resumo e link do currículo; sem nota).
+2. Quando o gestor escolher um candidato e pedir para contatar → use contatar_candidato com o ID informado.
 3. Quando o gestor autorizar o encaminhamento de um candidato para os franqueados → use encaminhar_franqueado com o ID informado.
 
 Fluxo obrigatório para arquivamento:
@@ -186,7 +186,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "ranking_candidatos",
-            "description": "Analisa os currículos dos candidatos inscritos para uma vaga e retorna um ranking com nota e justificativa para cada um.",
+            "description": "Lista os candidatos inscritos numa vaga com nome, região, um breve resumo do currículo e o link do currículo. Não faz avaliação nem atribui nota.",
             "parameters": {
                 "type": "object",
                 "properties": {

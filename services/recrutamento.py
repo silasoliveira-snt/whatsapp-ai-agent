@@ -143,10 +143,44 @@ def analisar_lote_vaga(vaga_id: int) -> None:
 
 # --- tools do agente ---
 
+def _resumir_candidato(c: dict) -> str:
+    """Resumo curto e neutro do currículo (sem avaliação, sem nota). Cacheia em ranking_analise."""
+    if c.get("ranking_analise"):
+        return c["ranking_analise"]
+
+    texto = c.get("cv_texto") or ""
+    if not texto and c.get("cv_url"):
+        texto = _extrair_texto_pdf(c["cv_url"])
+        if texto:
+            client.table("candidatos").update({"cv_texto": texto}).eq("id", c["id"]).execute()
+
+    if not texto:
+        return "Currículo não disponível."
+
+    try:
+        openai = _get_openai()
+        resp   = openai.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": (
+                "Resuma este currículo em no máximo 2 linhas, de forma neutra e factual "
+                "(experiência principal e formação). Sem opinião, sem nota, sem recomendação.\n\n"
+                f"{texto[:4000]}"
+            )}],
+        )
+        resumo = resp.choices[0].message.content.strip()
+    except Exception as e:
+        resumo = f"Erro ao resumir: {e}"
+
+    client.table("candidatos").update({"ranking_analise": resumo}).eq("id", c["id"]).execute()
+    return resumo
+
+
 def ranking_candidatos(vaga: str) -> str:
+    """Lista os candidatos de uma vaga: nome, região, breve resumo e link do currículo.
+    Sem triagem/nota — só entrega o currículo ao gestor."""
     vaga_r = (
         client.table("vagas")
-        .select("id, titulo, descricao, requisitos")
+        .select("id, titulo")
         .ilike("titulo", f"%{vaga}%")
         .limit(1)
         .execute()
@@ -154,14 +188,12 @@ def ranking_candidatos(vaga: str) -> str:
     if not vaga_r.data:
         return f"Vaga '{vaga}' não encontrada. Disponíveis: Consultora, Recepção, Gerente, Esteticista."
 
-    vaga_data   = vaga_r.data[0]
-    vaga_id     = vaga_data["id"]
-    vaga_titulo = vaga_data["titulo"]
-    descricao   = f"{vaga_data['descricao']} Requisitos: {vaga_data['requisitos']}"
+    vaga_id     = vaga_r.data[0]["id"]
+    vaga_titulo = vaga_r.data[0]["titulo"]
 
     todos = (
         client.table("candidatos")
-        .select("id, nome, regiao, cv_url, cv_texto, ranking_score, ranking_analise, status")
+        .select("id, nome, regiao, cv_url, cv_texto, ranking_analise")
         .eq("vaga_id", vaga_id)
         .eq("arquivado", False)
         .order("created_at")
@@ -171,21 +203,13 @@ def ranking_candidatos(vaga: str) -> str:
     if not todos:
         return f"Nenhum candidato inscrito para a vaga {vaga_titulo}."
 
-    openai = _get_openai()
-    for c in todos:
-        if c.get("ranking_score") is not None:
-            continue
-        _analisar_candidato(c, vaga_titulo, descricao, openai)
-
-    todos.sort(key=lambda x: x.get("ranking_score") or 0, reverse=True)
-    top = todos[:10]
-
-    linhas = [f"Ranking — {vaga_titulo} (top {len(top)} de {len(todos)} candidato(s))\n"]
-    for i, c in enumerate(top, 1):
-        nota_str = f"{c['ranking_score']:.1f}" if c.get("ranking_score") is not None else "—"
-        linhas.append(f"{i}. [ID {c['id']}] {c['nome']} | {c.get('regiao') or '—'} | Nota: {nota_str}")
-        if c.get("ranking_analise"):
-            linhas.append(f"   {c['ranking_analise']}")
+    linhas = [f"Currículos — {vaga_titulo} ({len(todos)} candidato(s))\n"]
+    for i, c in enumerate(todos, 1):
+        resumo = _resumir_candidato(c)
+        link   = _encurtar_url(c["cv_url"]) if c.get("cv_url") else "sem currículo anexado"
+        linhas.append(f"{i}. [ID {c['id']}] {c['nome']} | {c.get('regiao') or '—'}")
+        linhas.append(f"   {resumo}")
+        linhas.append(f"   Currículo: {link}")
     return "\n".join(linhas)
 
 
