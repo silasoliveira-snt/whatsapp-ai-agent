@@ -3,7 +3,6 @@ OPENAI_MODEL = "gpt-4o"
 
 # Status do candidato (tabela candidatos)
 STATUS_NOVO                    = "novo"
-STATUS_ANALISADO               = "analisado"
 STATUS_CONTATADO               = "contatado"
 STATUS_COMPORTAMENTAL_RECEBIDO = "comportamental_recebido"
 STATUS_ENCAMINHADO             = "encaminhado"

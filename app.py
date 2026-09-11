@@ -168,16 +168,22 @@ def receive_treinamento():
             log.warning(f"Treinamento — campos ausentes: nome={nome} treinamentos={treinamentos_selecionados}")
             return jsonify({"error": "Campos obrigatórios ausentes: nome, treinamento"}), 400
 
-        # Telefone do responsável da unidade (não-crítico: falha aqui não derruba a inscrição).
+        # Unidade + telefone do responsável (não-crítico: falha aqui não derruba a inscrição).
+        # ilike: o Tally manda a unidade em MAIÚSCULA e a tabela guarda Title Case.
         try:
             unidade_result = (
                 client.table("unidades")
-                .select("telefone_responsavel")
-                .eq("nome", unidade)
+                .select("nome, telefone_responsavel")
+                .ilike("nome", unidade)
                 .limit(1)
                 .execute()
             )
-            telefone_responsavel = unidade_result.data[0]["telefone_responsavel"] if unidade_result.data else None
+            if unidade_result.data:
+                unidade = unidade_result.data[0]["nome"]  # nome canônico da tabela
+                tel     = unidade_result.data[0]["telefone_responsavel"]
+                telefone_responsavel = tel.strip() if tel else None
+            else:
+                telefone_responsavel = None
         except Exception as e:
             log.error(f"Treinamento — falha ao buscar telefone da unidade '{unidade}': {e}")
             telefone_responsavel = None

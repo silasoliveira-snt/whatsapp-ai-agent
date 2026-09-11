@@ -20,15 +20,18 @@ def _fmt_data(data: str) -> str:
         return data
 
 
-def _get_presenciais(data: str) -> list[str]:
+def _e_dia_presencial(data: str) -> bool:
+    """True se o cronograma marca essa data como treinamento presencial.
+    Case-insensitive: o cronograma guarda 'Presencial'/'Online' (maiúsculo)."""
     cron = (
         client.table("cronograma")
-        .select("treinamento")
+        .select("id")
         .eq("data", data)
-        .neq("tipo", "online")
+        .ilike("tipo", "presencial")
+        .limit(1)
         .execute()
     )
-    return [r["treinamento"] for r in (cron.data or [])]
+    return bool(cron.data)
 
 
 def _montar_mensagem_ativacao(r: dict) -> str:
@@ -122,15 +125,13 @@ def buscar_medicos(data: str) -> str:
 # --- ações ---
 
 def preview_confirmacao(data: str) -> str:
-    presenciais = _get_presenciais(data)
-    if not presenciais:
+    if not _e_dia_presencial(data):
         return f"Nenhum treinamento presencial em {data}."
 
     result = (
         client.table("treinamentos")
         .select("nome, unidade, telefone_responsavel")
         .eq("data_treinamento", data)
-        .in_("treinamento", presenciais)
         .is_("confirmacao_status", "null")
         .eq("arquivado", False)
         .execute()
@@ -165,15 +166,13 @@ def preview_confirmacao(data: str) -> str:
 
 
 def confirmar_presenca(data: str) -> str:
-    presenciais = _get_presenciais(data)
-    if not presenciais:
+    if not _e_dia_presencial(data):
         return f"Nenhum treinamento presencial em {data}."
 
     result = (
         client.table("treinamentos")
         .select("*")
         .eq("data_treinamento", data)
-        .in_("treinamento", presenciais)
         .is_("confirmacao_status", "null")
         .eq("arquivado", False)
         .execute()
@@ -274,7 +273,7 @@ def preview_ativacao(data: str) -> str:
         client.table("cronograma")
         .select("data, treinamento, link_inscricao, mensagem_customizada")
         .eq("data", data)
-        .neq("tipo", "online")
+        .ilike("tipo", "presencial")
         .execute()
     )
     if not cron.data:
@@ -298,7 +297,7 @@ def ativar_treinamento(data: str) -> str:
         client.table("cronograma")
         .select("data, treinamento, link_inscricao, mensagem_customizada")
         .eq("data", data)
-        .neq("tipo", "online")
+        .ilike("tipo", "presencial")
         .execute()
     )
     if not cron.data:
